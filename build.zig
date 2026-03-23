@@ -329,6 +329,15 @@ pub fn build(b: *std.Build) void {
             .{ .name = "rect", .module = rect_mod },
         },
     });
+    const file_tree_mod = b.createModule(.{
+        .root_source_file = b.path("src/workbench/file_tree.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "gl", .module = gl_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
     const sidebar_mod = b.createModule(.{
         .root_source_file = b.path("src/workbench/sidebar.zig"),
         .target = target,
@@ -338,6 +347,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "font_atlas", .module = font_atlas_mod },
             .{ .name = "color", .module = color_mod },
             .{ .name = "rect", .module = rect_mod },
+            .{ .name = "file_tree", .module = file_tree_mod },
         },
     });
     const panel_mod = b.createModule(.{
@@ -396,6 +406,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "panel", .module = panel_mod },
             .{ .name = "context_menu", .module = context_menu_mod },
             .{ .name = "win32", .module = win32_mod },
+            .{ .name = "file_tree", .module = file_tree_mod },
         },
     });
     const app_mod = b.createModule(.{
@@ -500,6 +511,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "tabs", .module = tabs_mod },
                 .{ .name = "activity_bar", .module = activity_bar_mod },
                 .{ .name = "sidebar", .module = sidebar_mod },
+                .{ .name = "file_tree", .module = file_tree_mod },
                 .{ .name = "panel", .module = panel_mod },
                 .{ .name = "context_menu", .module = context_menu_mod },
                 .{ .name = "status_bar", .module = status_bar_mod },
