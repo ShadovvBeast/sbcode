@@ -30,7 +30,7 @@ pub const LineSyntax = struct {
     tokens: [MAX_TOKENS_PER_LINE]SyntaxToken = undefined,
     token_count: u16 = 0,
 
-    fn addToken(self: *LineSyntax, start: u16, length: u16, kind: TokenKind) void {
+    pub fn addToken(self: *LineSyntax, start: u16, length: u16, kind: TokenKind) void {
         if (self.token_count >= MAX_TOKENS_PER_LINE or length == 0) return;
         self.tokens[self.token_count] = .{ .start_col = start, .len = length, .kind = kind };
         self.token_count += 1;
@@ -140,7 +140,7 @@ pub const SyntaxHighlighter = struct {
         return c == ' ' or c == '\t' or c == '\r';
     }
 
-    fn tokenizeZig(ls: *LineSyntax, text: []const u8) void {
+    pub fn tokenizeZig(ls: *LineSyntax, text: []const u8) void {
         var pos: u16 = 0;
         const len: u16 = @intCast(text.len);
 
@@ -265,7 +265,7 @@ pub const SyntaxHighlighter = struct {
     // JSON tokenizer
     // ========================================================================
 
-    fn tokenizeJson(ls: *LineSyntax, text: []const u8) void {
+    pub fn tokenizeJson(ls: *LineSyntax, text: []const u8) void {
         var pos: u16 = 0;
         const len: u16 = @intCast(text.len);
 
