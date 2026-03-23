@@ -266,6 +266,57 @@ pub const Workbench = struct {
     color_theme: [64]u8 = undefined,
     color_theme_len: u8 = 0,
 
+    // Confirm dialog state (GL-rendered, replaces Win32 MessageBox)
+    confirm_dialog_visible: bool = false,
+    confirm_dialog_selected: u8 = 0, // 0=Save, 1=Don't Save, 2=Cancel
+    confirm_dialog_anim: f32 = 0.0, // fade-in animation
+    confirm_dialog_action: u8 = 0, // 0=close window, 1=close tab
+
+    /// Show the unsaved changes confirmation dialog.
+    /// action: 0 = close window, 1 = close tab
+    pub fn showConfirmDialog(self: *Workbench, action: u8) void {
+        self.confirm_dialog_visible = true;
+        self.confirm_dialog_selected = 0;
+        self.confirm_dialog_anim = 0.0;
+        self.confirm_dialog_action = action;
+    }
+
+    /// Handle the confirm dialog result. Called when user picks a button.
+    pub fn handleConfirmResult(self: *Workbench, choice: u8) void {
+        self.confirm_dialog_visible = false;
+        self.confirm_dialog_anim = 0.0;
+        const action = self.confirm_dialog_action;
+
+        switch (choice) {
+            0 => {
+                // Save
+                self.saveCurrentFile();
+                if (action == 0) {
+                    // Close window
+                    const hwnd = self.hwnd orelse (global_hwnd orelse return);
+                    _ = win32.DestroyWindow(hwnd);
+                } else {
+                    // Close tab
+                    if (self.tab_count > 0) self.closeTab(self.active_tab);
+                }
+            },
+            1 => {
+                // Don't Save
+                self.buffer.dirty = false; // discard changes
+                if (action == 0) {
+                    const hwnd = self.hwnd orelse (global_hwnd orelse return);
+                    _ = win32.DestroyWindow(hwnd);
+                } else {
+                    if (self.tab_count > 0) self.closeTab(self.active_tab);
+                }
+            },
+            2 => {
+                // Cancel — do nothing
+            },
+            else => {},
+        }
+    }
+
     /// Register default keybindings (e.g., Ctrl+O for file open).
     ///
     /// Postconditions:
@@ -481,6 +532,33 @@ pub const Workbench = struct {
         // Animate dropdown menu (smooth open)
         if (self.dropdown_open and self.dropdown_anim < 1.0) {
             self.dropdown_anim = @min(1.0, self.dropdown_anim + @as(f32, @floatCast(delta_time)) * 8.0);
+        }
+
+        // Animate confirm dialog (fade-in)
+        if (self.confirm_dialog_visible and self.confirm_dialog_anim < 1.0) {
+            self.confirm_dialog_anim = @min(1.0, self.confirm_dialog_anim + @as(f32, @floatCast(delta_time)) * 6.0);
+        }
+
+        // When confirm dialog is visible, it blocks all other input
+        if (self.confirm_dialog_visible) {
+            if (input.left_button_pressed) {
+                self.handleConfirmDialogClickSimple(input.mouse_x, input.mouse_y, layout);
+            }
+            var ki: u32 = 0;
+            while (ki < input.key_event_count) : (ki += 1) {
+                const ev = input.key_events[ki];
+                if (!ev.pressed) continue;
+                if (ev.vk == VK_ESCAPE) {
+                    self.handleConfirmResult(2);
+                } else if (ev.vk == VK_RETURN) {
+                    self.handleConfirmResult(self.confirm_dialog_selected);
+                } else if (ev.vk == VK_TAB or ev.vk == VK_RIGHT) {
+                    self.confirm_dialog_selected = (self.confirm_dialog_selected + 1) % 3;
+                } else if (ev.vk == VK_LEFT) {
+                    self.confirm_dialog_selected = if (self.confirm_dialog_selected == 0) 2 else self.confirm_dialog_selected - 1;
+                }
+            }
+            return; // Block all other input
         }
 
         // Track dropdown hover item from mouse position
@@ -709,6 +787,9 @@ pub const Workbench = struct {
 
         // 12. Dropdown menu overlay (animated, GL-rendered)
         self.renderDropdownMenu(font_atlas, layout);
+
+        // 13. Confirm dialog overlay (topmost)
+        self.renderConfirmDialog(layout, font_atlas);
     }
 
     // =========================================================================
@@ -2545,6 +2626,166 @@ pub const Workbench = struct {
         } else {
             if (self.font_zoom_level > -10) self.font_zoom_level -= 1;
         }
+    }
+
+    /// Handle confirm dialog click using fixed button layout (no font atlas needed).
+    fn handleConfirmDialogClickSimple(self: *Workbench, mx: i32, my: i32, layout: *const LayoutState) void {
+        const win_w = layout.window_w;
+        const win_h = layout.window_h;
+        const dlg_w: i32 = 400;
+        const dlg_h: i32 = 140;
+        const dlg_x = @divTrunc(win_w - dlg_w, 2);
+        const dlg_y = @divTrunc(win_h - dlg_h, 2) - 30;
+
+        // Click outside dialog = cancel
+        if (mx < dlg_x or mx >= dlg_x + dlg_w or my < dlg_y or my >= dlg_y + dlg_h) {
+            self.handleConfirmResult(2);
+            return;
+        }
+
+        // Button row: fixed widths (Save=60, Don't Save=110, Cancel=75)
+        const btn_h: i32 = 28;
+        const btn_pad: i32 = 8;
+        const btn_y = dlg_y + dlg_h - btn_h - 16;
+        const btn_ws = [_]i32{ 60, 110, 75 };
+        const total_btn_w = btn_ws[0] + btn_ws[1] + btn_ws[2] + btn_pad * 2;
+        var bx = dlg_x + dlg_w - total_btn_w - 16;
+
+        if (my >= btn_y and my < btn_y + btn_h) {
+            for (0..3) |i| {
+                if (mx >= bx and mx < bx + btn_ws[i]) {
+                    self.handleConfirmResult(@intCast(i));
+                    return;
+                }
+                bx += btn_ws[i] + btn_pad;
+            }
+        }
+    }
+
+    /// Render the custom confirm dialog overlay (replaces Win32 MessageBox).
+    fn renderConfirmDialog(self: *const Workbench, layout: *const LayoutState, font_atlas: *const FontAtlas) void {
+        if (!self.confirm_dialog_visible) return;
+
+        const win_w = layout.window_w;
+        const win_h = layout.window_h;
+        const cell_w = font_atlas.cell_w;
+        const cell_h = font_atlas.cell_h;
+
+        // Fade-in alpha
+        const alpha_f = self.confirm_dialog_anim;
+        const bg_alpha: u8 = @intFromFloat(@min(255.0, alpha_f * 180.0));
+
+        // Semi-transparent dark overlay covering entire window
+        gl.glEnable(gl.GL_BLEND);
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+        renderRegionBackground(Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h }, Color.rgba(0x00, 0x00, 0x00, bg_alpha));
+
+        if (alpha_f < 0.1) return;
+
+        // Dialog box dimensions
+        const dlg_w: i32 = 400;
+        const dlg_h: i32 = 140;
+        const dlg_x = @divTrunc(win_w - dlg_w, 2);
+        const dlg_y = @divTrunc(win_h - dlg_h, 2) - 30; // slightly above center
+
+        // Dialog background
+        renderRegionBackground(Rect{ .x = dlg_x, .y = dlg_y, .w = dlg_w, .h = dlg_h }, Color.rgb(0x25, 0x25, 0x25));
+
+        // Border
+        renderRegionBackground(Rect{ .x = dlg_x, .y = dlg_y, .w = dlg_w, .h = 1 }, Color.rgb(0x45, 0x45, 0x45));
+        renderRegionBackground(Rect{ .x = dlg_x, .y = dlg_y + dlg_h - 1, .w = dlg_w, .h = 1 }, Color.rgb(0x45, 0x45, 0x45));
+        renderRegionBackground(Rect{ .x = dlg_x, .y = dlg_y, .w = 1, .h = dlg_h }, Color.rgb(0x45, 0x45, 0x45));
+        renderRegionBackground(Rect{ .x = dlg_x + dlg_w - 1, .y = dlg_y, .w = 1, .h = dlg_h }, Color.rgb(0x45, 0x45, 0x45));
+
+        // Title text
+        const title = "SBCode";
+        font_atlas.renderText(title, @floatFromInt(dlg_x + 16), @floatFromInt(dlg_y + 12), Color.rgb(0xE0, 0xE0, 0xE0));
+
+        // Message text
+        const msg_text = "Do you want to save changes before closing?";
+        const msg_y = dlg_y + 12 + cell_h + 16;
+        font_atlas.renderText(msg_text, @floatFromInt(dlg_x + 16), @floatFromInt(msg_y), Color.rgb(0xCC, 0xCC, 0xCC));
+
+        // Buttons row (right-aligned)
+        const btn_h: i32 = 28;
+        const btn_pad: i32 = 8;
+        const btn_y = dlg_y + dlg_h - btn_h - 16;
+
+        const btn_labels = [_][]const u8{ "Save", "Don't Save", "Cancel" };
+        const btn_widths = [_]i32{
+            @as(i32, @intCast(btn_labels[0].len)) * cell_w + 24,
+            @as(i32, @intCast(btn_labels[1].len)) * cell_w + 24,
+            @as(i32, @intCast(btn_labels[2].len)) * cell_w + 24,
+        };
+        const total_btn_w = btn_widths[0] + btn_widths[1] + btn_widths[2] + btn_pad * 2;
+        var bx = dlg_x + dlg_w - total_btn_w - 16;
+
+        for (btn_labels, 0..) |label, i| {
+            const is_selected = (@as(u8, @intCast(i)) == self.confirm_dialog_selected);
+            const bg = if (is_selected) Color.rgb(0x09, 0x47, 0x71) else Color.rgb(0x3C, 0x3C, 0x3C);
+            const border_color = if (is_selected) Color.rgb(0x26, 0x7F, 0xD9) else Color.rgb(0x50, 0x50, 0x50);
+
+            renderRegionBackground(Rect{ .x = bx, .y = btn_y, .w = btn_widths[i], .h = btn_h }, bg);
+            // Button border
+            renderRegionBackground(Rect{ .x = bx, .y = btn_y, .w = btn_widths[i], .h = 1 }, border_color);
+            renderRegionBackground(Rect{ .x = bx, .y = btn_y + btn_h - 1, .w = btn_widths[i], .h = 1 }, border_color);
+            renderRegionBackground(Rect{ .x = bx, .y = btn_y, .w = 1, .h = btn_h }, border_color);
+            renderRegionBackground(Rect{ .x = bx + btn_widths[i] - 1, .y = btn_y, .w = 1, .h = btn_h }, border_color);
+
+            // Button text centered
+            const text_x = bx + @divTrunc(btn_widths[i] - @as(i32, @intCast(label.len)) * cell_w, 2);
+            const text_y = btn_y + @divTrunc(btn_h - cell_h, 2);
+            const text_color = if (is_selected) Color.rgb(0xFF, 0xFF, 0xFF) else Color.rgb(0xCC, 0xCC, 0xCC);
+            font_atlas.renderText(label, @floatFromInt(text_x), @floatFromInt(text_y), text_color);
+
+            bx += btn_widths[i] + btn_pad;
+        }
+    }
+
+    /// Handle a click inside the confirm dialog. Returns true if consumed.
+    fn handleConfirmDialogClick(self: *Workbench, mx: i32, my: i32, layout: *const LayoutState, font_atlas: *const FontAtlas) bool {
+        if (!self.confirm_dialog_visible) return false;
+
+        const win_w = layout.window_w;
+        const win_h = layout.window_h;
+        const cell_w = font_atlas.cell_w;
+
+        const dlg_w: i32 = 400;
+        const dlg_h: i32 = 140;
+        const dlg_x = @divTrunc(win_w - dlg_w, 2);
+        const dlg_y = @divTrunc(win_h - dlg_h, 2) - 30;
+
+        // Click outside dialog = cancel
+        if (mx < dlg_x or mx >= dlg_x + dlg_w or my < dlg_y or my >= dlg_y + dlg_h) {
+            self.handleConfirmResult(2); // Cancel
+            return true;
+        }
+
+        // Check button clicks
+        const btn_h: i32 = 28;
+        const btn_pad: i32 = 8;
+        const btn_y = dlg_y + dlg_h - btn_h - 16;
+
+        if (my < btn_y or my >= btn_y + btn_h) return true; // inside dialog but not on buttons
+
+        const btn_labels = [_][]const u8{ "Save", "Don't Save", "Cancel" };
+        const btn_widths = [_]i32{
+            @as(i32, @intCast(btn_labels[0].len)) * cell_w + 24,
+            @as(i32, @intCast(btn_labels[1].len)) * cell_w + 24,
+            @as(i32, @intCast(btn_labels[2].len)) * cell_w + 24,
+        };
+        const total_btn_w = btn_widths[0] + btn_widths[1] + btn_widths[2] + btn_pad * 2;
+        var bx = dlg_x + dlg_w - total_btn_w - 16;
+
+        for (0..3) |i| {
+            if (mx >= bx and mx < bx + btn_widths[i]) {
+                self.handleConfirmResult(@intCast(i));
+                return true;
+            }
+            bx += btn_widths[i] + btn_pad;
+        }
+
+        return true; // consumed (inside dialog)
     }
 
     /// Handle a click inside the dropdown menu. Returns true if click was consumed.

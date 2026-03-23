@@ -414,21 +414,9 @@ fn windowProc(hwnd: w32.HWND, msg: w32.UINT, wparam: w32.WPARAM, lparam: w32.LPA
 
         // ----- Window lifecycle -----
         w32.WM_CLOSE => {
-            // Check if buffer has unsaved changes
+            // Check if buffer has unsaved changes — show custom GL dialog
             if (app.workbench.buffer.dirty) {
-                const result = w32.MessageBoxW(
-                    hwnd,
-                    w32.L("Do you want to save changes before closing?"),
-                    w32.L("SBCode"),
-                    w32.MB_YESNOCANCEL | w32.MB_ICONWARNING,
-                );
-                if (result == w32.IDYES) {
-                    app.workbench.saveCurrentFile();
-                    _ = w32.DestroyWindow(hwnd);
-                } else if (result == w32.IDNO) {
-                    _ = w32.DestroyWindow(hwnd);
-                }
-                // IDCANCEL: do nothing, don't close
+                app.workbench.showConfirmDialog(0); // 0 = close window action
                 return 0;
             }
             _ = w32.DestroyWindow(hwnd);
