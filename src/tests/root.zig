@@ -51,4 +51,8 @@ comptime {
     _ = @import("app");
     _ = @import("diff");
     _ = @import("glob");
+    _ = @import("extension");
+    _ = @import("ext_zig_lang");
+    _ = @import("ext_json_lang");
+    _ = @import("manifest");
 }

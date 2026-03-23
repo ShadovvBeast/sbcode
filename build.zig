@@ -381,6 +381,45 @@ pub fn build(b: *std.Build) void {
             .{ .name = "rect", .module = rect_mod },
         },
     });
+    // Extension system modules
+    const extension_mod = b.createModule(.{
+        .root_source_file = b.path("src/extension/extension.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "syntax", .module = syntax_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
+    const ext_zig_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/zig_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_json_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/json_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const manifest_mod = b.createModule(.{
+        .root_source_file = b.path("src/extension/manifest.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "ext_zig_lang", .module = ext_zig_lang_mod },
+            .{ .name = "ext_json_lang", .module = ext_json_lang_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
     const workbench_mod = b.createModule(.{
         .root_source_file = b.path("src/workbench/workbench.zig"),
         .target = target,
@@ -407,6 +446,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "context_menu", .module = context_menu_mod },
             .{ .name = "win32", .module = win32_mod },
             .{ .name = "file_tree", .module = file_tree_mod },
+            .{ .name = "manifest", .module = manifest_mod },
+            .{ .name = "extension", .module = extension_mod },
         },
     });
     const app_mod = b.createModule(.{
@@ -519,6 +560,10 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "app", .module = app_mod },
                 .{ .name = "diff", .module = diff_mod },
                 .{ .name = "glob", .module = glob_mod },
+                .{ .name = "extension", .module = extension_mod },
+                .{ .name = "ext_zig_lang", .module = ext_zig_lang_mod },
+                .{ .name = "ext_json_lang", .module = ext_json_lang_mod },
+                .{ .name = "manifest", .module = manifest_mod },
             },
         }),
     });
