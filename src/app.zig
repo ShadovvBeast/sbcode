@@ -110,6 +110,9 @@ pub const App = struct {
     ///
     /// Returns true on success, false if wglCreateContext fails (PostQuitMessage called).
     pub fn init(self: *App) bool {
+        // Enable DPI awareness for crisp rendering on high-DPI displays
+        _ = w32.SetProcessDPIAware();
+
         // 1. Get module handle
         const hinstance = w32.GetModuleHandleW(null) orelse return false;
 
@@ -133,16 +136,23 @@ pub const App = struct {
         };
         _ = w32.RegisterClassExW(&wc);
 
-        // 4. Create borderless WS_POPUP | WS_VISIBLE window (1280x720 default)
+        // 4. Compute window size: ~80% of screen, centered (VS Code default behavior)
+        const screen_w = w32.GetSystemMetrics(w32.SM_CXSCREEN);
+        const screen_h = w32.GetSystemMetrics(w32.SM_CYSCREEN);
+        const win_w = if (screen_w > 0) @divTrunc(screen_w * 4, 5) else DEFAULT_WIDTH; // 80%
+        const win_h = if (screen_h > 0) @divTrunc(screen_h * 4, 5) else DEFAULT_HEIGHT;
+        const win_x = @divTrunc(screen_w - win_w, 2);
+        const win_y = @divTrunc(screen_h - win_h, 2);
+
         self.hwnd = w32.CreateWindowExW(
             w32.WS_EX_APPWINDOW,
             w32.L("SBCode"),
             w32.L("SBCode"),
             w32.WS_POPUP | w32.WS_VISIBLE,
-            100,
-            100,
-            DEFAULT_WIDTH,
-            DEFAULT_HEIGHT,
+            win_x,
+            win_y,
+            win_w,
+            win_h,
             null,
             null,
             hinstance,
@@ -200,11 +210,35 @@ pub const App = struct {
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
         gl.glEnable(gl.GL_LINE_SMOOTH);
 
-        // 7. Initialize FontAtlas with system font (Consolas, 16px)
-        self.font_atlas.init(w32.L("Consolas"), 16);
+        // 7. Query DPI and compute scale factor for crisp, properly-sized UI
+        const dpi = w32.GetDpiForWindow(self.hwnd.?);
+        const dpi_scale: i32 = if (dpi >= 96) @intCast(dpi) else 96;
 
-        // 8. Initialize LayoutState with window dimensions
-        self.layout.recompute(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+        // Scale font size: 16px base at 96 DPI
+        const font_size = @divTrunc(16 * dpi_scale, 96);
+        self.font_atlas.init(w32.L("Consolas"), font_size);
+
+        // 7b. Rasterize app icon (sbcode.ico) into a GL texture for title bar rendering
+        if (icon) |hicon| {
+            self.workbench.icon_texture_id = rasterizeIconToTexture(hicon);
+        }
+
+        // 7c. Rasterize search icon (search.ico) into a GL texture for the search bar
+        const search_icon = w32.LoadImageW(null, w32.L("src/search.ico"), w32.IMAGE_ICON, 0, 0, w32.LR_LOADFROMFILE | w32.LR_DEFAULTSIZE);
+        if (search_icon) |sicon| {
+            self.workbench.search_icon_texture_id = rasterizeIconToTexture(sicon);
+        }
+
+        // 8. Scale layout dimensions for DPI, then recompute
+        self.layout.title_bar_height = @divTrunc(30 * dpi_scale, 96);
+        self.layout.activity_bar_width = @divTrunc(48 * dpi_scale, 96);
+        self.layout.sidebar_width = @divTrunc(250 * dpi_scale, 96);
+        self.layout.status_bar_height = @divTrunc(22 * dpi_scale, 96);
+        self.layout.panel_height = @divTrunc(200 * dpi_scale, 96);
+        self.layout.editor_tabs_height = @divTrunc(35 * dpi_scale, 96);
+        self.layout.breadcrumbs_height = @divTrunc(22 * dpi_scale, 96);
+        self.layout.minimap_width = @divTrunc(60 * dpi_scale, 96);
+        self.layout.recompute(win_w, win_h);
 
         // 9. Initialize QueryPerformanceCounter timer
         var freq: w32.LARGE_INTEGER = .{ .QuadPart = 0 };
@@ -234,6 +268,63 @@ pub const App = struct {
         return true;
     }
 };
+
+// =============================================================================
+// Icon → GL texture helper
+// =============================================================================
+
+/// Rasterize an HICON into a 32×32 RGBA GL texture via GDI DIB section.
+/// Returns the GL texture ID, or 0 on failure.
+fn rasterizeIconToTexture(hicon: w32.HICON) gl.GLuint {
+    const ICON_SZ = 32;
+    const dc = w32.CreateCompatibleDC(null) orelse return 0;
+    defer _ = w32.DeleteDC(dc);
+
+    var bmi: w32.BITMAPINFO = .{
+        .bmiHeader = .{
+            .biSize = @sizeOf(w32.BITMAPINFOHEADER),
+            .biWidth = ICON_SZ,
+            .biHeight = -ICON_SZ,
+            .biPlanes = 1,
+            .biBitCount = 32,
+            .biCompression = w32.BI_RGB,
+            .biSizeImage = 0,
+            .biXPelsPerMeter = 0,
+            .biYPelsPerMeter = 0,
+            .biClrUsed = 0,
+            .biClrImportant = 0,
+        },
+        .bmiColors = .{.{ .b = 0, .g = 0, .r = 0, .reserved = 0 }},
+    };
+    var dib_bits: ?*anyopaque = null;
+    const bmp = w32.CreateDIBSection(dc, &bmi, w32.DIB_RGB_COLORS, &dib_bits, null, 0) orelse return 0;
+    defer _ = w32.DeleteObject(@ptrCast(bmp));
+
+    _ = w32.SelectObject(dc, @ptrCast(bmp));
+    _ = w32.DrawIconEx(dc, 0, 0, hicon, ICON_SZ, ICON_SZ, 0, null, w32.DI_NORMAL);
+
+    const bits = dib_bits orelse return 0;
+    const src: [*]u8 = @ptrCast(bits);
+    var rgba: [ICON_SZ * ICON_SZ * 4]u8 = undefined;
+    var px: usize = 0;
+    while (px < ICON_SZ * ICON_SZ) : (px += 1) {
+        const off = px * 4;
+        rgba[off + 0] = src[off + 2]; // R
+        rgba[off + 1] = src[off + 1]; // G
+        rgba[off + 2] = src[off + 0]; // B
+        rgba[off + 3] = src[off + 3]; // A
+    }
+
+    var tex_id: gl.GLuint = 0;
+    gl.glGenTextures(1, &tex_id);
+    gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id);
+    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, @intCast(gl.GL_RGBA), ICON_SZ, ICON_SZ, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, @ptrCast(&rgba));
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR);
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR);
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+    return tex_id;
+}
 
 // =============================================================================
 // Global App pointer — set by init(), used by windowProc callback
@@ -355,6 +446,21 @@ fn windowProc(hwnd: w32.HWND, msg: w32.UINT, wparam: w32.WPARAM, lparam: w32.LPA
             return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
 
+        // ----- Maximize constraints (keep WS_POPUP within work area) -----
+        w32.WM_GETMINMAXINFO => {
+            const mmi: *w32.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            const monitor = w32.MonitorFromWindow(hwnd, w32.MONITOR_DEFAULTTONEAREST);
+            var mi = w32.MONITORINFO{};
+            mi.cbSize = @sizeOf(w32.MONITORINFO);
+            if (w32.GetMonitorInfoW(monitor, &mi) != 0) {
+                mmi.ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
+                mmi.ptMaxPosition.y = mi.rcWork.top - mi.rcMonitor.top;
+                mmi.ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
+                mmi.ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
+            }
+            return 0;
+        },
+
         // ----- Layout -----
         w32.WM_SIZE => {
             const width: i32 = @as(i32, loword(lparam));
@@ -396,16 +502,17 @@ fn windowProc(hwnd: w32.HWND, msg: w32.UINT, wparam: w32.WPARAM, lparam: w32.LPA
             // Title bar drag zone (excluding window control buttons area on the right)
             const title_bar = app.layout.getRegion(.title_bar);
             if (title_bar.contains(pt.x, pt.y)) {
-                // Menu bar labels occupy the left portion of the title bar.
-                // Total menu bar width: left_margin(8) + 8 labels * (chars*cell_w + pad*2)
+                // Menu bar labels: use cached cell_w from workbench (DPI-scaled)
                 // Label chars: File(4)+Edit(4)+Selection(9)+View(4)+Go(2)+Run(3)+Terminal(8)+Help(4) = 38
-                const cell_w = app.font_atlas.cell_w;
-                const menu_bar_end = 8 + 38 * cell_w + 8 * 20; // MENU_BAR_LEFT + chars*cell_w + count*PAD*2
+                const cw = app.workbench.cell_w;
+                const menu_pad: i32 = @max(cw, 10); // scale padding with font
+                const menu_bar_end = cw + 38 * cw + 8 * menu_pad * 2; // left_margin + chars*cw + count*pad*2
                 if (pt.x < menu_bar_end and app.workbench.menu_bar_visible) {
                     return w32.HTCLIENT; // Let menu bar clicks through as client area
                 }
-                // Reserve right 120px for close/min/max buttons
-                if (pt.x < title_bar.x + title_bar.w - 120) {
+                // Reserve right area for close/min/max buttons (3 * scaled button width)
+                const btn_area = app.layout.title_bar_height * 4; // ~4x title bar height for 3 buttons
+                if (pt.x < title_bar.x + title_bar.w - btn_area) {
                     return w32.HTCAPTION;
                 }
             }

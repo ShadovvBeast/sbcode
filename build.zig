@@ -261,6 +261,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const file_picker_mod = b.createModule(.{
+        .root_source_file = b.path("src/workbench/file_picker.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "win32", .module = win32_mod },
+        },
+    });
     const fuzzy_subsequence_prop_test_mod = b.createModule(.{
         .root_source_file = b.path("src/tests/fuzzy_subsequence_prop_test.zig"),
         .target = target,
@@ -373,6 +381,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "font_atlas", .module = font_atlas_mod },
             .{ .name = "input", .module = input_mod },
             .{ .name = "command_palette", .module = command_palette_mod },
+            .{ .name = "file_picker", .module = file_picker_mod },
             .{ .name = "buffer", .module = buffer_mod },
             .{ .name = "cursor", .module = cursor_mod },
             .{ .name = "syntax", .module = syntax_mod },
@@ -483,6 +492,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "layout_nonoverlap_prop_test", .module = layout_nonoverlap_prop_test_mod },
                 .{ .name = "layout_hittest_prop_test", .module = layout_hittest_prop_test_mod },
                 .{ .name = "command_palette", .module = command_palette_mod },
+                .{ .name = "file_picker", .module = file_picker_mod },
                 .{ .name = "fuzzy_subsequence_prop_test", .module = fuzzy_subsequence_prop_test_mod },
                 .{ .name = "fuzzy_monotonicity_prop_test", .module = fuzzy_monotonicity_prop_test_mod },
                 .{ .name = "cmdpalette_filter_prop_test", .module = cmdpalette_filter_prop_test_mod },

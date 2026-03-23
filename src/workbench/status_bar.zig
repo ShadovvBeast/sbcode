@@ -119,11 +119,15 @@ pub const StatusBar = struct {
         if (region.w <= 0 or region.h <= 0) return;
 
         const cell_w = font_atlas.cell_w;
+        const cell_h = font_atlas.cell_h;
         if (cell_w <= 0) return;
 
+        // DPI-scaled padding
+        const pad_x: i32 = cell_w;
+        const text_y = region.y + @divTrunc(region.h - cell_h, 2); // vertically centered
+
         // ---- LEFT SIDE ----
-        var left_x = region.x + PAD_X;
-        const text_y = region.y + PAD_Y;
+        var left_x = region.x + pad_x;
 
         // Branch name (with branch icon symbol)
         if (self.branch_name_len > 0) {
@@ -135,11 +139,11 @@ pub const StatusBar = struct {
                 @floatFromInt(text_y),
                 TEXT_COLOR,
             );
-            left_x += @as(i32, self.branch_name_len) * cell_w + PAD_X;
+            left_x += @as(i32, self.branch_name_len) * cell_w + pad_x;
         } else {
             // Default branch display
             font_atlas.renderText("* main", @floatFromInt(left_x), @floatFromInt(text_y), TEXT_COLOR);
-            left_x += 6 * cell_w + PAD_X;
+            left_x += 6 * cell_w + pad_x;
         }
 
         // Error count
@@ -151,7 +155,7 @@ pub const StatusBar = struct {
         err_len += 1;
         err_len += writeU32(err_buf[err_len..], self.error_count);
         font_atlas.renderText(err_buf[0..err_len], @floatFromInt(left_x), @floatFromInt(text_y), TEXT_COLOR);
-        left_x += @as(i32, @intCast(err_len)) * cell_w + PAD_X;
+        left_x += @as(i32, @intCast(err_len)) * cell_w + pad_x;
 
         // Warning count
         var warn_buf: [16]u8 = undefined;
@@ -164,12 +168,12 @@ pub const StatusBar = struct {
         font_atlas.renderText(warn_buf[0..warn_len], @floatFromInt(left_x), @floatFromInt(text_y), TEXT_COLOR);
 
         // ---- RIGHT SIDE (rendered right-to-left) ----
-        var right_x = region.x + region.w - PAD_X;
+        var right_x = region.x + region.w - pad_x;
 
         // Notification bell icon (rightmost)
         right_x -= cell_w;
         font_atlas.renderText("o", @floatFromInt(right_x), @floatFromInt(text_y), TEXT_COLOR);
-        right_x -= PAD_X;
+        right_x -= pad_x;
 
         // Language mode
         if (self.language_mode_len > 0) {
@@ -181,14 +185,14 @@ pub const StatusBar = struct {
                 @floatFromInt(text_y),
                 TEXT_COLOR,
             );
-            right_x -= PAD_X;
+            right_x -= pad_x;
         } else {
             // Default: "Plain Text"
             const default_lang = "Plain Text";
             const lang_w = @as(i32, @intCast(default_lang.len)) * cell_w;
             right_x -= lang_w;
             font_atlas.renderText(default_lang, @floatFromInt(right_x), @floatFromInt(text_y), TEXT_COLOR);
-            right_x -= PAD_X;
+            right_x -= pad_x;
         }
 
         // Encoding: "UTF-8"
@@ -196,7 +200,7 @@ pub const StatusBar = struct {
         const enc_w = @as(i32, @intCast(encoding.len)) * cell_w;
         right_x -= enc_w;
         font_atlas.renderText(encoding, @floatFromInt(right_x), @floatFromInt(text_y), TEXT_COLOR);
-        right_x -= PAD_X;
+        right_x -= pad_x;
 
         // Spaces/Tab size: "Spaces: 4"
         var spaces_buf: [16]u8 = undefined;
@@ -214,7 +218,7 @@ pub const StatusBar = struct {
         const sp_w = @as(i32, @intCast(sp_len)) * cell_w;
         right_x -= sp_w;
         font_atlas.renderText(spaces_buf[0..sp_len], @floatFromInt(right_x), @floatFromInt(text_y), TEXT_COLOR);
-        right_x -= PAD_X;
+        right_x -= pad_x;
 
         // Line/Col: "Ln X, Col Y"
         var line_col_buf: [32]u8 = undefined;

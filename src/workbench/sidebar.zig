@@ -96,7 +96,14 @@ pub const Sidebar = struct {
         if (region.w <= 0 or region.h <= 0) return;
 
         const cell_h = font_atlas.cell_h;
+        const cell_w = font_atlas.cell_w;
         if (cell_h <= 0) return;
+
+        // DPI-scaled dimensions
+        const section_h: i32 = cell_h + 6;
+        const row_h: i32 = cell_h + 6;
+        const pad_x: i32 = cell_w * 2;
+        const pad_y: i32 = @divTrunc(cell_h - font_atlas.cell_h, 2) + 3;
 
         // Top separator line
         renderQuad(Rect{ .x = region.x, .y = region.y, .w = region.w, .h = 1 }, SEPARATOR_COLOR);
@@ -106,60 +113,62 @@ pub const Sidebar = struct {
             .x = region.x,
             .y = region.y + 1,
             .w = region.w,
-            .h = SECTION_H,
+            .h = section_h,
         };
         renderQuad(header_rect, SIDEBAR_BG);
         font_atlas.renderText(
             "EXPLORER",
-            @floatFromInt(region.x + PAD_X),
-            @floatFromInt(header_rect.y + PAD_Y),
+            @floatFromInt(region.x + pad_x),
+            @floatFromInt(header_rect.y + pad_y),
             SECTION_HEADER_COLOR,
         );
 
         // Collapsible section: project name header
-        const project_header_y = header_rect.y + SECTION_H;
+        const project_header_y = header_rect.y + section_h;
         const project_rect = Rect{
             .x = region.x,
             .y = project_header_y,
             .w = region.w,
-            .h = SECTION_H,
+            .h = section_h,
         };
         renderQuad(project_rect, SECTION_HEADER_BG);
         font_atlas.renderText(
             "> SBCODE",
-            @floatFromInt(region.x + 8),
-            @floatFromInt(project_header_y + PAD_Y),
+            @floatFromInt(region.x + cell_w),
+            @floatFromInt(project_header_y + pad_y),
             SECTION_HEADER_COLOR,
         );
 
         // Separator below project header
         renderQuad(Rect{
             .x = region.x,
-            .y = project_header_y + SECTION_H,
+            .y = project_header_y + section_h,
             .w = region.w,
             .h = 1,
         }, SEPARATOR_COLOR);
 
-        const entries_y = project_header_y + SECTION_H + 1;
+        const entries_y = project_header_y + section_h + 1;
 
         if (self.entry_count == 0) {
             // Show hint when no files are loaded
+            const hint_pad = pad_x;
+            const line_h = cell_h + 4;
             font_atlas.renderText(
                 "No folder opened",
-                @floatFromInt(region.x + PAD_X),
-                @floatFromInt(entries_y + 8),
+                @floatFromInt(region.x + hint_pad),
+                @floatFromInt(entries_y + cell_h),
                 DIM_COLOR,
             );
             font_atlas.renderText(
                 "Open a folder to",
-                @floatFromInt(region.x + PAD_X),
-                @floatFromInt(entries_y + 8 + cell_h + 4),
+                @floatFromInt(region.x + hint_pad),
+                @floatFromInt(entries_y + cell_h + line_h),
                 DIM_COLOR,
             );
             font_atlas.renderText(
                 "start working",
-                @floatFromInt(region.x + PAD_X),
-                @floatFromInt(entries_y + 8 + (cell_h + 4) * 2),
+                @floatFromInt(region.x + hint_pad),
+                @floatFromInt(entries_y + cell_h + line_h * 2),
                 DIM_COLOR,
             );
             return;
@@ -168,14 +177,14 @@ pub const Sidebar = struct {
         // Draw file entries from state
         var i: u8 = 0;
         while (i < self.entry_count) : (i += 1) {
-            const y = entries_y + @as(i32, i) * ROW_H;
-            if (y + ROW_H > region.y + region.h) break;
+            const y = entries_y + @as(i32, i) * row_h;
+            if (y + row_h > region.y + region.h) break;
 
             const label = self.entries[i][0..self.entry_lens[i]];
             font_atlas.renderText(
                 label,
-                @floatFromInt(region.x + PAD_X + 8),
-                @floatFromInt(y + PAD_Y),
+                @floatFromInt(region.x + pad_x + cell_w),
+                @floatFromInt(y + pad_y),
                 TEXT_COLOR,
             );
         }

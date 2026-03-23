@@ -309,8 +309,9 @@ pub const MENU_BAR_COUNT: u8 = MENU_BAR_LABELS.len;
 /// Padding between menu bar items (pixels).
 pub const MENU_BAR_PAD: i32 = 10;
 
-/// Left margin before first menu item.
-pub const MENU_BAR_LEFT: i32 = 8;
+/// Icon space before first menu item (icon width + padding).
+/// The icon occupies ~2 cell widths + padding on each side.
+pub const ICON_SPACE_CELLS: i32 = 4; // cells reserved for icon area
 
 // =============================================================================
 // Menu zone — which context menu to show based on click location.
@@ -585,7 +586,7 @@ pub fn showMenuBarDropdown(index: MenuBarIndex, hwnd: win32.HWND, screen_x: i32,
 /// Returns an array of [MENU_BAR_COUNT] x-positions and an array of widths.
 pub fn menuBarLabelX(cell_w: i32) [MENU_BAR_COUNT]i32 {
     var xs: [MENU_BAR_COUNT]i32 = undefined;
-    var x: i32 = MENU_BAR_LEFT;
+    var x: i32 = ICON_SPACE_CELLS * cell_w; // leave room for icon
     for (MENU_BAR_LABELS, 0..) |label, i| {
         xs[i] = x;
         x += @as(i32, @intCast(label.len)) * cell_w + MENU_BAR_PAD * 2;

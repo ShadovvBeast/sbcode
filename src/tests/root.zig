@@ -35,6 +35,7 @@ comptime {
     _ = @import("layout_nonoverlap_prop_test");
     _ = @import("layout_hittest_prop_test");
     _ = @import("command_palette");
+    _ = @import("file_picker");
     _ = @import("fuzzy_subsequence_prop_test");
     _ = @import("fuzzy_monotonicity_prop_test");
     _ = @import("cmdpalette_filter_prop_test");

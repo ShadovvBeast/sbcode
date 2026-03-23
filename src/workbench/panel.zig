@@ -221,6 +221,11 @@ pub const Panel = struct {
         const cell_w = font_atlas.cell_w;
         if (cell_h <= 0 or cell_w <= 0) return;
 
+        // DPI-scaled dimensions
+        const tab_height: i32 = cell_h + 12;
+        const pad_x: i32 = cell_w;
+        const pad_y: i32 = @divTrunc(cell_h, 2);
+
         // Top separator line
         renderQuad(Rect{ .x = region.x, .y = region.y, .w = region.w, .h = 1 }, SEPARATOR_COLOR);
 
@@ -229,16 +234,16 @@ pub const Panel = struct {
             .x = region.x,
             .y = region.y + 1,
             .w = region.w,
-            .h = TAB_HEIGHT,
+            .h = tab_height,
         };
         renderQuad(tab_bar_rect, PANEL_TAB_BG);
 
         // Draw tab labels with underline indicator on active tab
-        var tab_x = region.x + PAD_X;
+        var tab_x = region.x + pad_x;
         for (TAB_LABELS, 0..) |label, i| {
             const is_active = (i == self.active_tab);
             const color = if (is_active) TAB_ACTIVE_COLOR else TAB_INACTIVE_COLOR;
-            const text_y = tab_bar_rect.y + @divTrunc(TAB_HEIGHT - cell_h, 2);
+            const text_y = tab_bar_rect.y + @divTrunc(tab_height - cell_h, 2);
 
             font_atlas.renderText(
                 label,
@@ -253,29 +258,29 @@ pub const Panel = struct {
             if (is_active) {
                 renderQuad(Rect{
                     .x = tab_x,
-                    .y = tab_bar_rect.y + TAB_HEIGHT - UNDERLINE_H,
+                    .y = tab_bar_rect.y + tab_height - UNDERLINE_H,
                     .w = label_w,
                     .h = UNDERLINE_H,
                 }, TAB_UNDERLINE_COLOR);
             }
 
-            tab_x += label_w + PAD_X * 2;
+            tab_x += label_w + pad_x * 2;
         }
 
         // Bottom border of tab bar
         renderQuad(Rect{
             .x = region.x,
-            .y = tab_bar_rect.y + TAB_HEIGHT,
+            .y = tab_bar_rect.y + tab_height,
             .w = region.w,
             .h = 1,
         }, SEPARATOR_COLOR);
 
         // Draw output lines from state
-        const content_y = tab_bar_rect.y + TAB_HEIGHT + 1 + PAD_Y;
+        const content_y = tab_bar_rect.y + tab_height + 1 + pad_y;
         if (self.line_count == 0) {
             font_atlas.renderText(
                 "Terminal ready",
-                @floatFromInt(region.x + PAD_X),
+                @floatFromInt(region.x + pad_x),
                 @floatFromInt(content_y),
                 DIM_COLOR,
             );
@@ -290,7 +295,7 @@ pub const Panel = struct {
             const line = self.lines[i][0..self.line_lens[i]];
             font_atlas.renderText(
                 line,
-                @floatFromInt(region.x + PAD_X),
+                @floatFromInt(region.x + pad_x),
                 @floatFromInt(y),
                 TEXT_COLOR,
             );

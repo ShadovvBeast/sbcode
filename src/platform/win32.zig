@@ -340,8 +340,39 @@ pub extern "user32" fn GetDC(HWND) callconv(cc) ?HDC;
 pub extern "user32" fn ReleaseDC(HWND, HDC) callconv(cc) i32;
 pub extern "user32" fn GetKeyState(i32) callconv(cc) i16;
 pub extern "user32" fn LoadImageW(?HINSTANCE, [*:0]const u16, UINT, i32, i32, UINT) callconv(cc) ?HICON;
+pub extern "user32" fn DrawIconEx(?HDC, i32, i32, ?HICON, i32, i32, UINT, ?*opaque {}, UINT) callconv(cc) BOOL;
+pub const DI_NORMAL: UINT = 0x0003;
 pub extern "user32" fn PostMessageW(HWND, UINT, WPARAM, LPARAM) callconv(cc) BOOL;
 pub extern "user32" fn GetWindowRect(HWND, *RECT) callconv(cc) BOOL;
+pub const HMONITOR = *opaque {};
+pub extern "user32" fn MonitorFromWindow(HWND, DWORD) callconv(cc) ?HMONITOR;
+pub extern "user32" fn GetMonitorInfoW(?HMONITOR, *MONITORINFO) callconv(cc) BOOL;
+pub extern "user32" fn SetProcessDPIAware() callconv(cc) BOOL;
+pub extern "user32" fn GetSystemMetrics(i32) callconv(cc) i32;
+
+pub const SM_CXSCREEN: i32 = 0;
+pub const SM_CYSCREEN: i32 = 1;
+
+pub extern "user32" fn GetDpiForWindow(HWND) callconv(cc) UINT;
+
+pub const MONITOR_DEFAULTTONEAREST: DWORD = 0x00000002;
+
+pub const MONITORINFO = extern struct {
+    cbSize: DWORD = @sizeOf(MONITORINFO),
+    rcMonitor: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
+    rcWork: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
+    dwFlags: DWORD = 0,
+};
+
+pub const MINMAXINFO = extern struct {
+    ptReserved: POINT = .{ .x = 0, .y = 0 },
+    ptMaxSize: POINT = .{ .x = 0, .y = 0 },
+    ptMaxPosition: POINT = .{ .x = 0, .y = 0 },
+    ptMinTrackSize: POINT = .{ .x = 0, .y = 0 },
+    ptMaxTrackSize: POINT = .{ .x = 0, .y = 0 },
+};
+
+pub const WM_GETMINMAXINFO: UINT = 0x0024;
 
 // LoadImageW constants
 pub const IMAGE_ICON: UINT = 1;
@@ -356,6 +387,7 @@ pub extern "kernel32" fn GetModuleHandleW(?[*:0]const u16) callconv(cc) ?HINSTAN
 pub extern "kernel32" fn QueryPerformanceCounter(*LARGE_INTEGER) callconv(cc) BOOL;
 pub extern "kernel32" fn QueryPerformanceFrequency(*LARGE_INTEGER) callconv(cc) BOOL;
 pub extern "kernel32" fn GetLastError() callconv(cc) DWORD;
+pub extern "kernel32" fn GetCurrentDirectoryW(DWORD, [*]u16) callconv(cc) DWORD;
 pub extern "kernel32" fn CreateFileW([*:0]const u16, DWORD, DWORD, ?*anyopaque, DWORD, DWORD, ?HANDLE) callconv(cc) ?HANDLE;
 pub extern "kernel32" fn ReadFile(?HANDLE, [*]u8, DWORD, ?*DWORD, ?*anyopaque) callconv(cc) BOOL;
 pub extern "kernel32" fn WriteFile(?HANDLE, [*]const u8, DWORD, ?*DWORD, ?*anyopaque) callconv(cc) BOOL;
@@ -458,11 +490,16 @@ pub extern "user32" fn IsZoomed(HWND) callconv(cc) BOOL;
 // FindFirstFile / FindNextFile for directory listing
 // =============================================================================
 
+pub const FILETIME = extern struct {
+    dwLowDateTime: DWORD,
+    dwHighDateTime: DWORD,
+};
+
 pub const WIN32_FIND_DATAW = extern struct {
     dwFileAttributes: DWORD,
-    ftCreationTime: u64,
-    ftLastAccessTime: u64,
-    ftLastWriteTime: u64,
+    ftCreationTime: FILETIME,
+    ftLastAccessTime: FILETIME,
+    ftLastWriteTime: FILETIME,
     nFileSizeHigh: DWORD,
     nFileSizeLow: DWORD,
     dwReserved0: DWORD,

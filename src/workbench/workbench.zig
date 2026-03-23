@@ -26,6 +26,8 @@ const Sidebar = @import("sidebar").Sidebar;
 const Panel = @import("panel").Panel;
 const win32 = @import("win32");
 const context_menu = @import("context_menu");
+const file_picker_mod = @import("file_picker");
+const FilePicker = file_picker_mod.FilePicker;
 
 // Global HWND for window control button clicks
 var global_hwnd: ?win32.HWND = null;
@@ -162,6 +164,7 @@ pub const Tab = struct {
 pub const Workbench = struct {
     // Sub-components
     command_palette: CommandPalette = .{},
+    file_picker: FilePicker = .{},
     keybindings: KeybindingService = .{},
     buffer: TextBuffer = .{},
     cursor_state: CursorState = .{},
@@ -247,8 +250,28 @@ pub const Workbench = struct {
     // Font zoom level
     font_zoom_level: i8 = 0,
 
+    // App icon GL texture (rasterized from sbcode.ico at startup)
+    icon_texture_id: gl.GLuint = 0,
+
+    // Search icon GL texture (rasterized from search.ico at startup)
+    search_icon_texture_id: gl.GLuint = 0,
+
+    // Cached font cell dimensions (set from render, used by update for hit-testing)
+    cell_w: i32 = 8,
+    cell_h: i32 = 16,
+
     // Title bar double_click tracking
     title_bar_last_click: f64 = 0.0,
+
+    // File picker open animation (0.0 = closed, 1.0 = fully open)
+    file_picker_anim: f32 = 0.0,
+
+    // File picker double-click tracking
+    file_picker_last_click: f64 = 0.0,
+    file_picker_last_click_idx: u16 = 0xFFFF,
+
+    // File picker mouse hover row (-1 = none)
+    file_picker_hover_row: i16 = -1,
 
     // Debug session state
     debug_session_active: bool = false,
@@ -539,6 +562,18 @@ pub const Workbench = struct {
             self.confirm_dialog_anim = @min(1.0, self.confirm_dialog_anim + @as(f32, @floatCast(delta_time)) * 6.0);
         }
 
+        // Animate file picker (slide-down + fade-in)
+        if (self.file_picker.visible) {
+            if (self.file_picker_anim < 1.0) {
+                self.file_picker_anim = @min(1.0, self.file_picker_anim + @as(f32, @floatCast(delta_time)) * 5.0);
+            }
+            // Track mouse hover over file list rows
+            self.updateFilePickerHover(input.mouse_x, input.mouse_y, layout);
+        } else {
+            self.file_picker_anim = 0.0;
+            self.file_picker_hover_row = -1;
+        }
+
         // When confirm dialog is visible, it blocks all other input
         if (self.confirm_dialog_visible) {
             if (input.left_button_pressed) {
@@ -567,11 +602,11 @@ pub const Workbench = struct {
 
             // Menu bar hover-to-switch: when dropdown is open, hovering over
             // a different menu bar label switches to that menu
-            const title_h: i32 = 30; // title bar height
+            const title_h = layout.title_bar_height;
             if (input.mouse_y >= 0 and input.mouse_y < title_h) {
-                const cell_w: i32 = 8;
-                const menu_xs = context_menu.menuBarLabelX(cell_w);
-                const menu_ws = context_menu.menuBarLabelW(cell_w);
+                const cw = self.cell_w;
+                const menu_xs = context_menu.menuBarLabelX(cw);
+                const menu_ws = context_menu.menuBarLabelW(cw);
                 var mi: u8 = 0;
                 while (mi < context_menu.MENU_BAR_COUNT) : (mi += 1) {
                     if (input.mouse_x >= menu_xs[mi] and input.mouse_x < menu_xs[mi] + menu_ws[mi]) {
@@ -583,7 +618,7 @@ pub const Workbench = struct {
                             self.dropdown_x = menu_xs[mi];
                             self.dropdown_y = title_h;
                             self.dropdown_item_count = self.getDropdownItemCount(mi);
-                            self.dropdown_w = self.getDropdownWidth(mi, cell_w);
+                            self.dropdown_w = self.getDropdownWidth(mi, cw);
                         }
                         break;
                     }
@@ -593,20 +628,38 @@ pub const Workbench = struct {
 
         // Handle mouse wheel scrolling
         if (input.scroll_delta != 0) {
-            const lines: i32 = @divTrunc(input.scroll_delta, 40);
-            if (lines < 0) {
-                const add: u32 = @intCast(-lines);
-                self.scroll_top +|= add;
-            } else {
-                const sub: u32 = @intCast(lines);
-                if (self.scroll_top >= sub) {
-                    self.scroll_top -= sub;
+            // File picker scroll takes priority when visible
+            if (self.file_picker.visible) {
+                const scroll_lines: i32 = @divTrunc(input.scroll_delta, 40);
+                if (scroll_lines < 0) {
+                    const add: u16 = @intCast(@min(-scroll_lines, 255));
+                    self.file_picker.scroll_top +|= add;
+                    const max_scroll = if (self.file_picker.filtered_count > 14) self.file_picker.filtered_count - 14 else 0;
+                    if (self.file_picker.scroll_top > max_scroll) self.file_picker.scroll_top = max_scroll;
                 } else {
-                    self.scroll_top = 0;
+                    const sub: u16 = @intCast(@min(scroll_lines, 255));
+                    if (self.file_picker.scroll_top >= sub) {
+                        self.file_picker.scroll_top -= sub;
+                    } else {
+                        self.file_picker.scroll_top = 0;
+                    }
                 }
-            }
-            if (self.buffer.line_count > 0 and self.scroll_top >= self.buffer.line_count) {
-                self.scroll_top = self.buffer.line_count - 1;
+            } else {
+                const lines: i32 = @divTrunc(input.scroll_delta, 40);
+                if (lines < 0) {
+                    const add: u32 = @intCast(-lines);
+                    self.scroll_top +|= add;
+                } else {
+                    const sub: u32 = @intCast(lines);
+                    if (self.scroll_top >= sub) {
+                        self.scroll_top -= sub;
+                    } else {
+                        self.scroll_top = 0;
+                    }
+                }
+                if (self.buffer.line_count > 0 and self.scroll_top >= self.buffer.line_count) {
+                    self.scroll_top = self.buffer.line_count - 1;
+                }
             }
         }
 
@@ -645,6 +698,12 @@ pub const Workbench = struct {
             // When command palette is visible, route input there
             if (self.command_palette.visible) {
                 self.handleCommandPaletteInput(ev.vk);
+                continue;
+            }
+
+            // When file picker is visible, route input there
+            if (self.file_picker.visible) {
+                self.handleFilePickerInput(ev.vk);
                 continue;
             }
 
@@ -692,11 +751,13 @@ pub const Workbench = struct {
             self.handleCursorMovement(ev.vk, ev.shift, ev.ctrl);
         }
 
-        // Dispatch text input to active buffer when palette is not visible
-        if (!self.command_palette.visible and !self.find_visible) {
+        // Dispatch text input to active buffer when no overlay is visible
+        if (!self.command_palette.visible and !self.find_visible and !self.file_picker.visible) {
             self.handleTextInput(input);
         } else if (self.command_palette.visible) {
             self.handlePaletteTextInput(input);
+        } else if (self.file_picker.visible) {
+            self.handleFilePickerTextInput(input);
         } else if (self.find_visible) {
             self.handleFindTextInput(input);
         }
@@ -724,6 +785,10 @@ pub const Workbench = struct {
     ///     sidebar, editor tabs, editor area, panel, status bar
     ///   - Command palette overlay is rendered if visible
     pub fn render(self: *Workbench, layout: *const LayoutState, font_atlas: *const FontAtlas) void {
+        // Cache font cell dimensions for use by update() hit-testing
+        self.cell_w = font_atlas.cell_w;
+        self.cell_h = font_atlas.cell_h;
+
         // 1. Title bar with text and window control buttons
         self.renderTitleBar(layout.getRegion(.title_bar), font_atlas);
 
@@ -790,6 +855,11 @@ pub const Workbench = struct {
 
         // 13. Confirm dialog overlay (topmost)
         self.renderConfirmDialog(layout, font_atlas);
+
+        // 14. File picker overlay (above confirm dialog)
+        if (self.file_picker.visible) {
+            self.renderFilePicker(layout, font_atlas);
+        }
     }
 
     // =========================================================================
@@ -1042,18 +1112,18 @@ pub const Workbench = struct {
 
     /// Handle mouse click to position cursor in editor area.
     fn handleMouseClick(self: *Workbench, input: *const InputState, editor_area: Rect, shift: bool) void {
-        const cell_w = @as(i32, 8);
-        const cell_h = @as(i32, 16);
-        if (cell_w <= 0 or cell_h <= 0) return;
+        const cw = self.cell_w;
+        const ch = self.cell_h;
+        if (cw <= 0 or ch <= 0) return;
 
         // Account for gutter width (line numbers)
-        const gutter_px = @as(i32, @intCast(viewport.GUTTER_CHAR_WIDTH)) * cell_w;
+        const gutter_px = @as(i32, @intCast(viewport.GUTTER_CHAR_WIDTH)) * cw;
         const rel_x = input.mouse_x - editor_area.x - gutter_px;
         const rel_y = input.mouse_y - editor_area.y;
         if (rel_y < 0) return;
 
-        const click_line = self.scroll_top + @as(u32, @intCast(@divTrunc(rel_y, cell_h)));
-        const click_col: u32 = if (rel_x > 0) @intCast(@divTrunc(rel_x, cell_w)) else 0;
+        const click_line = self.scroll_top + @as(u32, @intCast(@divTrunc(rel_y, ch)));
+        const click_col: u32 = if (rel_x > 0) @intCast(@divTrunc(rel_x, cw)) else 0;
 
         // Clamp to buffer bounds
         var line = click_line;
@@ -1102,6 +1172,12 @@ pub const Workbench = struct {
     /// Handle all click regions (tabs, title bar buttons, activity bar, sidebar, panel, editor).
     fn handleAllClicks(self: *Workbench, input: *const InputState, layout: *LayoutState) void {
         if (self.command_palette.visible) return;
+
+        // File picker click handling (highest priority when open)
+        if (self.file_picker.visible) {
+            self.handleFilePickerClick(input.mouse_x, input.mouse_y, layout);
+            return;
+        }
 
         const mx = input.mouse_x;
         const my = input.mouse_y;
@@ -1194,32 +1270,79 @@ pub const Workbench = struct {
             return;
         }
 
-        // Menu bar label clicks (left side)
-        const cell_w: i32 = 8;
-        const menu_xs = context_menu.menuBarLabelX(cell_w);
-        const menu_ws = context_menu.menuBarLabelW(cell_w);
+        // Menu bar label clicks (left side) — with overflow awareness
+        const cw = self.cell_w;
+        const menu_xs = context_menu.menuBarLabelX(cw);
+        const menu_ws = context_menu.menuBarLabelW(cw);
         const rel_x = mx - title_bar.x;
 
+        // Check if click is on the search bar (centered in full title bar width)
+        const bar_w: i32 = @min(420, @divTrunc(title_bar.w, 3));
+        const bar_x_click = title_bar.x + @divTrunc(title_bar.w - bar_w, 2);
+        if (bar_w > cw * 8 and mx >= bar_x_click and mx < bar_x_click + bar_w) {
+            if (!self.command_palette.visible) {
+                self.command_palette.toggle();
+            }
+            return;
+        }
+
+        // Compute visible menu count (same logic as renderTitleBar)
+        const overflow_btn_w = cw * 3 + context_menu.MENU_BAR_PAD * 2;
+        var visible_count: u8 = context_menu.MENU_BAR_COUNT;
+        {
+            var idx: u8 = 0;
+            while (idx < context_menu.MENU_BAR_COUNT) : (idx += 1) {
+                const menu_right = title_bar.x + menu_xs[idx] + menu_ws[idx];
+                if (menu_right + overflow_btn_w > bar_x_click and bar_w > cw * 8) {
+                    visible_count = idx;
+                    break;
+                }
+            }
+        }
+
+        // Check clicks on visible menu labels
         var i: u8 = 0;
-        while (i < context_menu.MENU_BAR_COUNT) : (i += 1) {
+        while (i < visible_count) : (i += 1) {
             if (rel_x >= menu_xs[i] and rel_x < menu_xs[i] + menu_ws[i]) {
                 if (self.dropdown_open and self.dropdown_index == i) {
-                    // Clicking the same menu again closes it
                     self.dropdown_open = false;
                     self.menu_bar_active = -1;
                     self.dropdown_anim = 0.0;
                 } else {
-                    // Open this dropdown
                     self.dropdown_open = true;
                     self.dropdown_index = i;
                     self.menu_bar_active = @intCast(i);
-                    self.dropdown_anim = 0.0; // Start animation from 0
+                    self.dropdown_anim = 0.0;
                     self.dropdown_hover_item = -1;
                     self.dropdown_x = title_bar.x + menu_xs[i];
                     self.dropdown_y = title_bar.y + title_bar.h;
-                    // Compute dropdown dimensions from item count
                     self.dropdown_item_count = self.getDropdownItemCount(i);
-                    self.dropdown_w = self.getDropdownWidth(i, cell_w);
+                    self.dropdown_w = self.getDropdownWidth(i, cw);
+                }
+                return;
+            }
+        }
+
+        // Check click on "..." overflow button
+        if (visible_count < context_menu.MENU_BAR_COUNT) {
+            const ox = menu_xs[visible_count];
+            if (rel_x >= ox and rel_x < ox + overflow_btn_w) {
+                // Open the first hidden menu as a starting point
+                const first_hidden = visible_count;
+                if (self.dropdown_open and self.dropdown_index == first_hidden) {
+                    self.dropdown_open = false;
+                    self.menu_bar_active = -1;
+                    self.dropdown_anim = 0.0;
+                } else {
+                    self.dropdown_open = true;
+                    self.dropdown_index = first_hidden;
+                    self.menu_bar_active = @intCast(first_hidden);
+                    self.dropdown_anim = 0.0;
+                    self.dropdown_hover_item = -1;
+                    self.dropdown_x = title_bar.x + ox;
+                    self.dropdown_y = title_bar.y + title_bar.h;
+                    self.dropdown_item_count = self.getDropdownItemCount(first_hidden);
+                    self.dropdown_w = self.getDropdownWidth(first_hidden, cw);
                 }
                 return;
             }
@@ -1790,40 +1913,9 @@ pub const Workbench = struct {
         self.scroll_top = 0;
     }
 
-    /// Show Save As dialog.
+    /// Show Save As dialog (GL-rendered file picker).
     fn showSaveAsDialog(self: *Workbench) void {
-        var file_buf: [512]u16 = [_]u16{0} ** 512;
-
-        var ofn: win32.OPENFILENAMEW = .{
-            .lStructSize = @sizeOf(win32.OPENFILENAMEW),
-            .hwndOwner = null,
-            .hInstance = null,
-            .lpstrFilter = win32.L("All Files\x00*.*\x00"),
-            .lpstrCustomFilter = null,
-            .nMaxCustFilter = 0,
-            .nFilterIndex = 1,
-            .lpstrFile = &file_buf,
-            .nMaxFile = 512,
-            .lpstrFileTitle = null,
-            .nMaxFileTitle = 0,
-            .lpstrInitialDir = null,
-            .lpstrTitle = win32.L("Save As"),
-            .Flags = win32.OFN_OVERWRITEPROMPT | win32.OFN_NOCHANGEDIR,
-            .nFileOffset = 0,
-            .nFileExtension = 0,
-            .lpstrDefExt = null,
-            .lCustData = 0,
-            .lpfnHook = null,
-            .lpTemplateName = null,
-            .pvReserved = null,
-            .dwReserved = 0,
-            .FlagsEx = 0,
-        };
-
-        if (win32.GetSaveFileNameW(&ofn) != 0) {
-            self.storeFilePath(@ptrCast(&file_buf));
-            self.saveFile(@ptrCast(&file_buf));
-        }
+        self.file_picker.open(.save);
     }
 
     /// Retokenize all lines after undo/redo/paste.
@@ -1919,42 +2011,9 @@ pub const Workbench = struct {
         self.find_has_match = false;
     }
 
-    /// Show Win32 Open File dialog and load the selected file.
+    /// Open the GL-rendered file picker overlay (replaces blocking Win32 dialog).
     fn showOpenFileDialog(self: *Workbench) void {
-        var file_buf: [512]u16 = [_]u16{0} ** 512;
-
-        var ofn: win32.OPENFILENAMEW = .{
-            .lStructSize = @sizeOf(win32.OPENFILENAMEW),
-            .hwndOwner = null,
-            .hInstance = null,
-            .lpstrFilter = win32.L("All Files\x00*.*\x00"),
-            .lpstrCustomFilter = null,
-            .nMaxCustFilter = 0,
-            .nFilterIndex = 1,
-            .lpstrFile = &file_buf,
-            .nMaxFile = 512,
-            .lpstrFileTitle = null,
-            .nMaxFileTitle = 0,
-            .lpstrInitialDir = null,
-            .lpstrTitle = win32.L("Open File"),
-            .Flags = win32.OFN_FILEMUSTEXIST | win32.OFN_PATHMUSTEXIST | win32.OFN_NOCHANGEDIR,
-            .nFileOffset = 0,
-            .nFileExtension = 0,
-            .lpstrDefExt = null,
-            .lCustData = 0,
-            .lpfnHook = null,
-            .lpTemplateName = null,
-            .pvReserved = null,
-            .dwReserved = 0,
-            .FlagsEx = 0,
-        };
-
-        if (win32.GetOpenFileNameW(&ofn) != 0) {
-            // Find null terminator
-            var path_end: usize = 0;
-            while (path_end < 512 and file_buf[path_end] != 0) : (path_end += 1) {}
-            self.openFile(@ptrCast(&file_buf));
-        }
+        self.file_picker.open(.open);
     }
 
     // =========================================================================
@@ -1962,28 +2021,129 @@ pub const Workbench = struct {
     // =========================================================================
 
     fn renderTitleBar(self: *const Workbench, region: Rect, font_atlas: *const FontAtlas) void {
-        renderRegionBackground(region, TITLE_BAR_BG);
+        // Translucent flat title bar — same color (#323232) with alpha gradient
+        // from nearly opaque at top (0.92) to more see-through at bottom (0.70),
+        // letting the content behind bleed through for a frosted-glass look.
+        {
+            const r = 0x32.0 / 255.0;
+            const g = 0x32.0 / 255.0;
+            const b = 0x32.0 / 255.0;
+            const alpha_top: f32 = 0.92;
+            const alpha_bot: f32 = 0.70;
+
+            const x0: f32 = @floatFromInt(region.x);
+            const y0: f32 = @floatFromInt(region.y);
+            const x1: f32 = @floatFromInt(region.x + region.w);
+            const y1: f32 = @floatFromInt(region.y + region.h);
+
+            gl.glDisable(gl.GL_TEXTURE_2D);
+
+            gl.glBegin(gl.GL_QUADS);
+            gl.glColor4f(r, g, b, alpha_top);
+            gl.glVertex2f(x0, y0);
+            gl.glColor4f(r, g, b, alpha_top);
+            gl.glVertex2f(x1, y0);
+            gl.glColor4f(r, g, b, alpha_bot);
+            gl.glVertex2f(x1, y1);
+            gl.glColor4f(r, g, b, alpha_bot);
+            gl.glVertex2f(x0, y1);
+            gl.glEnd();
+
+            // Subtle 1px bottom separator
+            gl.glBegin(gl.GL_QUADS);
+            gl.glColor4f(0.0, 0.0, 0.0, 0.25);
+            gl.glVertex2f(x0, y1 - 1.0);
+            gl.glVertex2f(x1, y1 - 1.0);
+            gl.glVertex2f(x1, y1);
+            gl.glVertex2f(x0, y1);
+            gl.glEnd();
+        }
 
         if (region.w <= 0 or region.h <= 0) return;
 
         const cell_w = font_atlas.cell_w;
-        const btn_area = WINDOW_BTN_WIDTH * 3; // space reserved for 3 buttons
+        const cell_h = font_atlas.cell_h;
 
-        // --- Menu bar labels (File, Edit, Selection, View, Go, Run, Terminal, Help) ---
+        // --- App icon: render sbcode.ico texture or fallback "SB" text ---
+        {
+            const icon_size = @min(region.h - 4, cell_h + 4);
+            const icon_x = region.x + @divTrunc(cell_w, 2);
+            const icon_y = region.y + @divTrunc(region.h - icon_size, 2);
+
+            if (self.icon_texture_id != 0) {
+                // Render the actual icon as a textured quad
+                const fx: f32 = @floatFromInt(icon_x);
+                const fy: f32 = @floatFromInt(icon_y);
+                const fx1: f32 = fx + @as(f32, @floatFromInt(icon_size));
+                const fy1: f32 = fy + @as(f32, @floatFromInt(icon_size));
+
+                gl.glEnable(gl.GL_TEXTURE_2D);
+                gl.glBindTexture(gl.GL_TEXTURE_2D, self.icon_texture_id);
+                gl.glColor4f(1.0, 1.0, 1.0, 1.0);
+                gl.glBegin(gl.GL_QUADS);
+                gl.glTexCoord2f(0.0, 0.0);
+                gl.glVertex2f(fx, fy);
+                gl.glTexCoord2f(1.0, 0.0);
+                gl.glVertex2f(fx1, fy);
+                gl.glTexCoord2f(1.0, 1.0);
+                gl.glVertex2f(fx1, fy1);
+                gl.glTexCoord2f(0.0, 1.0);
+                gl.glVertex2f(fx, fy1);
+                gl.glEnd();
+                gl.glDisable(gl.GL_TEXTURE_2D);
+            } else {
+                // Fallback: blue "SB" box
+                const icon_w = cell_w * 2 + 6;
+                const icon_h = cell_h + 4;
+                const fb_y = region.y + @divTrunc(region.h - icon_h, 2);
+                renderRegionBackground(Rect{
+                    .x = icon_x,
+                    .y = fb_y,
+                    .w = icon_w,
+                    .h = icon_h,
+                }, Color.rgb(0x00, 0x7A, 0xCC));
+                const text_ix = icon_x + 3;
+                const text_iy = fb_y + 2;
+                font_atlas.renderText("SB", @floatFromInt(text_ix), @floatFromInt(text_iy), Color.rgb(0xFF, 0xFF, 0xFF));
+            }
+        }
+
+        // --- Menu bar labels with overflow "..." collapse ---
         const menu_xs = context_menu.menuBarLabelX(cell_w);
         const menu_ws = context_menu.menuBarLabelW(cell_w);
         const text_y = region.y + @divTrunc(region.h - font_atlas.cell_h, 2);
 
-        for (context_menu.MENU_BAR_LABELS, 0..) |label, i| {
-            const mx = region.x + menu_xs[i];
-            const is_active = (self.menu_bar_active >= 0 and @as(u8, @intCast(i)) == @as(u8, @intCast(self.menu_bar_active)));
+        // Compute search bar position first so we know the cutoff
+        const bar_w: i32 = @min(420, @divTrunc(region.w, 3));
+        const bar_x = region.x + @divTrunc(region.w - bar_w, 2);
+        const overflow_btn_w = cell_w * 3 + context_menu.MENU_BAR_PAD * 2; // width of "..." button
 
-            // Highlight active menu item background
+        // Determine how many menu labels fit before the search bar
+        var visible_menu_count: u8 = context_menu.MENU_BAR_COUNT;
+        {
+            var idx: u8 = 0;
+            while (idx < context_menu.MENU_BAR_COUNT) : (idx += 1) {
+                const menu_right = region.x + menu_xs[idx] + menu_ws[idx];
+                // Need room for the label + overflow button if not the last
+                if (menu_right + overflow_btn_w > bar_x and bar_w > cell_w * 8) {
+                    visible_menu_count = idx;
+                    break;
+                }
+            }
+        }
+
+        // Render visible menu labels
+        var mi: u8 = 0;
+        while (mi < visible_menu_count) : (mi += 1) {
+            const label = context_menu.MENU_BAR_LABELS[mi];
+            const mx = region.x + menu_xs[mi];
+            const is_active = (self.menu_bar_active >= 0 and @as(u8, @intCast(mi)) == @as(u8, @intCast(self.menu_bar_active)));
+
             if (is_active) {
                 renderRegionBackground(Rect{
                     .x = mx,
                     .y = region.y,
-                    .w = menu_ws[i],
+                    .w = menu_ws[mi],
                     .h = region.h,
                 }, Color.rgb(0x45, 0x45, 0x45));
             }
@@ -1997,37 +2157,116 @@ pub const Workbench = struct {
             );
         }
 
-        // --- Title text centered in remaining space ---
-        // Menu bar occupies the left portion; title goes in the middle
-        const menu_end = region.x + menu_xs[context_menu.MENU_BAR_COUNT - 1] + menu_ws[context_menu.MENU_BAR_COUNT - 1];
+        // Render "..." overflow button if some menus are hidden
+        const overflow_x: i32 = if (visible_menu_count < context_menu.MENU_BAR_COUNT) blk: {
+            const ox = region.x + menu_xs[visible_menu_count]; // position where next label would be
+            const is_overflow_active = (self.menu_bar_active >= 0 and @as(u8, @intCast(self.menu_bar_active)) >= visible_menu_count);
+            if (is_overflow_active) {
+                renderRegionBackground(Rect{
+                    .x = ox,
+                    .y = region.y,
+                    .w = overflow_btn_w,
+                    .h = region.h,
+                }, Color.rgb(0x45, 0x45, 0x45));
+            }
+            const dot_color = if (is_overflow_active) Color.rgb(0xFF, 0xFF, 0xFF) else Color.rgb(0xCC, 0xCC, 0xCC);
+            font_atlas.renderText("...", @floatFromInt(ox + context_menu.MENU_BAR_PAD), @floatFromInt(text_y), dot_color);
+            break :blk ox;
+        } else -1;
+        // Store overflow state for click handling
+        _ = overflow_x;
 
-        var title_buf: [160]u8 = undefined;
-        var title_len: usize = 0;
-        if (self.tab_count > 0 and self.tabs[self.active_tab].label_len > 0) {
-            const lbl = self.tabs[self.active_tab].label[0..self.tabs[self.active_tab].label_len];
-            @memcpy(title_buf[0..lbl.len], lbl);
-            title_len = lbl.len;
-            const suffix = " - SBCode";
-            @memcpy(title_buf[title_len..][0..suffix.len], suffix);
-            title_len += suffix.len;
-        } else {
-            const default = "SBCode";
-            @memcpy(title_buf[0..default.len], default);
-            title_len = default.len;
+        // --- Search bar centered in the full title bar width (VS Code style) ---
+        {
+            const bar_h: i32 = region.h - 8;
+            const bar_y = region.y + @divTrunc(region.h - bar_h, 2);
+
+            if (bar_w > cell_w * 8) {
+                // Background — slightly lighter than title bar (#3C3C3C)
+                renderRegionBackground(Rect{
+                    .x = bar_x,
+                    .y = bar_y,
+                    .w = bar_w,
+                    .h = bar_h,
+                }, Color.rgb(0x3C, 0x3C, 0x3C));
+
+                // Subtle 1px inset border (#505050 top/sides, #2A2A2A bottom for depth)
+                {
+                    const bx0: f32 = @floatFromInt(bar_x);
+                    const by0: f32 = @floatFromInt(bar_y);
+                    const bx1: f32 = @floatFromInt(bar_x + bar_w);
+                    const by1: f32 = @floatFromInt(bar_y + bar_h);
+                    gl.glDisable(gl.GL_TEXTURE_2D);
+                    // Top + sides: lighter border
+                    gl.glColor4f(0x50.0 / 255.0, 0x50.0 / 255.0, 0x50.0 / 255.0, 0.8);
+                    gl.glBegin(gl.GL_LINE_STRIP);
+                    gl.glVertex2f(bx0, by1);
+                    gl.glVertex2f(bx0, by0);
+                    gl.glVertex2f(bx1, by0);
+                    gl.glVertex2f(bx1, by1);
+                    gl.glEnd();
+                    // Bottom: darker for depth
+                    gl.glColor4f(0x2A.0 / 255.0, 0x2A.0 / 255.0, 0x2A.0 / 255.0, 0.8);
+                    gl.glBegin(gl.GL_LINES);
+                    gl.glVertex2f(bx0, by1);
+                    gl.glVertex2f(bx1, by1);
+                    gl.glEnd();
+                }
+
+                // Build display text: active file name or "SBCode"
+                var bar_label_buf: [80]u8 = undefined;
+                var bar_label_len: usize = 0;
+                if (self.tab_count > 0 and self.tabs[self.active_tab].label_len > 0) {
+                    const lbl = self.tabs[self.active_tab].label[0..self.tabs[self.active_tab].label_len];
+                    @memcpy(bar_label_buf[0..lbl.len], lbl);
+                    bar_label_len = lbl.len;
+                } else {
+                    const default = "SBCode";
+                    @memcpy(bar_label_buf[0..default.len], default);
+                    bar_label_len = default.len;
+                }
+
+                // Center the content inside the bar: search icon + label
+                const icon_px: i32 = @min(bar_h - 4, cell_h); // icon size
+                const gap: i32 = 6;
+                const label_w = @as(i32, @intCast(bar_label_len)) * cell_w;
+                const total_content_w = icon_px + gap + label_w;
+                const content_x = bar_x + @divTrunc(bar_w - total_content_w, 2);
+                const content_y = bar_y + @divTrunc(bar_h - cell_h, 2);
+
+                // Search icon — use texture if available, fallback to ">" text
+                if (self.search_icon_texture_id != 0) {
+                    const ix: f32 = @floatFromInt(content_x);
+                    const iy: f32 = @floatFromInt(bar_y + @divTrunc(bar_h - icon_px, 2));
+                    const ix1: f32 = ix + @as(f32, @floatFromInt(icon_px));
+                    const iy1: f32 = iy + @as(f32, @floatFromInt(icon_px));
+                    gl.glEnable(gl.GL_TEXTURE_2D);
+                    gl.glBindTexture(gl.GL_TEXTURE_2D, self.search_icon_texture_id);
+                    gl.glColor4f(0.6, 0.6, 0.6, 1.0);
+                    gl.glBegin(gl.GL_QUADS);
+                    gl.glTexCoord2f(0.0, 0.0);
+                    gl.glVertex2f(ix, iy);
+                    gl.glTexCoord2f(1.0, 0.0);
+                    gl.glVertex2f(ix1, iy);
+                    gl.glTexCoord2f(1.0, 1.0);
+                    gl.glVertex2f(ix1, iy1);
+                    gl.glTexCoord2f(0.0, 1.0);
+                    gl.glVertex2f(ix, iy1);
+                    gl.glEnd();
+                    gl.glDisable(gl.GL_TEXTURE_2D);
+                } else {
+                    font_atlas.renderText(">", @floatFromInt(content_x), @floatFromInt(content_y), Color.rgb(0x80, 0x80, 0x80));
+                }
+
+                // Label text (slightly brighter)
+                font_atlas.renderText(
+                    bar_label_buf[0..bar_label_len],
+                    @floatFromInt(content_x + icon_px + gap),
+                    @floatFromInt(content_y),
+                    Color.rgb(0xA0, 0xA0, 0xA0),
+                );
+            }
         }
-
-        const avail_w = region.w - btn_area;
-        const title_w = @as(i32, @intCast(title_len)) * cell_w;
-        // Center between menu_end and button area
-        const center_space = avail_w - (menu_end - region.x);
-        const title_x = menu_end + @divTrunc(center_space - title_w, 2);
-
-        font_atlas.renderText(
-            title_buf[0..title_len],
-            @floatFromInt(title_x),
-            @floatFromInt(text_y),
-            Color.rgb(0xCC, 0xCC, 0xCC),
-        );
 
         // --- Window control buttons (46px wide each, right-aligned) ---
         const close_x = region.x + region.w - WINDOW_BTN_WIDTH;
@@ -2791,25 +3030,26 @@ pub const Workbench = struct {
     /// Handle a click inside the dropdown menu. Returns true if click was consumed.
     fn handleDropdownClick(self: *Workbench, mx: i32, my: i32) bool {
         const items = getDropdownItems(self.dropdown_index);
-        const item_h: i32 = 26;
-        const sep_h: i32 = 9;
+        const item_h: i32 = self.cell_h + 8;
+        const sep_h: i32 = @divTrunc(self.cell_h, 2);
+        const pad: i32 = @divTrunc(self.cell_h, 4);
         const dx = self.dropdown_x;
         const dy = self.dropdown_y;
         const dw = self.dropdown_w;
 
         // Compute total height
-        var total_h: i32 = 4;
+        var total_h: i32 = pad;
         for (items) |item| {
             total_h += item_h;
             if (item.separator_after) total_h += sep_h;
         }
-        total_h += 4;
+        total_h += pad;
 
         // Check if click is inside dropdown bounds
         if (mx < dx or mx >= dx + dw or my < dy or my >= dy + total_h) return false;
 
         // Find which item was clicked
-        var y = dy + 4;
+        var y = dy + pad;
         for (items) |item| {
             if (my >= y and my < y + item_h) {
                 if (!item.grayed) {
@@ -2830,8 +3070,9 @@ pub const Workbench = struct {
     /// Update dropdown hover item based on mouse position.
     fn updateDropdownHover(self: *Workbench, mx: i32, my: i32) void {
         const items = getDropdownItems(self.dropdown_index);
-        const item_h: i32 = 26;
-        const sep_h: i32 = 9;
+        const item_h: i32 = self.cell_h + 8;
+        const sep_h: i32 = @divTrunc(self.cell_h, 2);
+        const pad: i32 = @divTrunc(self.cell_h, 4);
         const dx = self.dropdown_x;
         const dy = self.dropdown_y;
         const dw = self.dropdown_w;
@@ -2842,7 +3083,7 @@ pub const Workbench = struct {
             return;
         }
 
-        var y = dy + 4;
+        var y = dy + pad;
         for (items, 0..) |item, idx| {
             if (my >= y and my < y + item_h) {
                 self.dropdown_hover_item = @intCast(idx);
@@ -2888,7 +3129,7 @@ pub const Workbench = struct {
             if (item.shortcut.len > 0) total += 4 + item.shortcut.len; // 4 chars gap
             if (total > max_len) max_len = total;
         }
-        return @as(i32, @intCast(max_len)) * cell_w + 40; // 20px padding each side
+        return @as(i32, @intCast(max_len)) * cell_w + cell_w * 4; // 2 cell_w padding each side
     }
 
     /// Get the menu items slice for a given dropdown index.
@@ -2912,17 +3153,21 @@ pub const Workbench = struct {
         if (self.dropdown_anim <= 0.001) return;
 
         const items = getDropdownItems(self.dropdown_index);
-        const item_h: i32 = 26; // height per menu item
-        const sep_h: i32 = 9; // separator row height
+        const cell_h = font_atlas.cell_h;
         const cell_w = font_atlas.cell_w;
+        const item_h: i32 = cell_h + 8; // font height + padding
+        const sep_h: i32 = @divTrunc(cell_h, 2); // half cell height
+        const pad: i32 = @divTrunc(cell_h, 4); // vertical padding top/bottom
+        const left_pad: i32 = cell_w * 2; // left text inset
+        const right_pad: i32 = cell_w * 2; // right text inset
 
         // Compute total height including separators
-        var total_h: i32 = 4; // top padding
+        var total_h: i32 = pad; // top padding
         for (items) |item| {
             total_h += item_h;
             if (item.separator_after) total_h += sep_h;
         }
-        total_h += 4; // bottom padding
+        total_h += pad; // bottom padding
 
         // Animated clip height (smooth ease-out)
         const t = self.dropdown_anim;
@@ -2973,7 +3218,7 @@ pub const Workbench = struct {
         renderRegionBackground(Rect{ .x = dx, .y = dy + anim_h - 1, .w = dw, .h = 1 }, Color.rgb(0x45, 0x45, 0x45));
 
         // Render items
-        var y = dy + 4; // top padding
+        var y = dy + pad; // top padding
         for (items, 0..) |item, idx| {
             // Only render if within animated clip region
             if (y + item_h > dy + anim_h) break;
@@ -2991,11 +3236,11 @@ pub const Workbench = struct {
             }
 
             // Item label
-            const text_y = y + @divTrunc(item_h - font_atlas.cell_h, 2);
+            const text_y = y + @divTrunc(item_h - cell_h, 2);
             const label_color = if (item.grayed) Color.rgb(0x6E, 0x6E, 0x6E) else Color.rgb(0xE0, 0xE0, 0xE0);
             font_atlas.renderText(
                 item.label,
-                @floatFromInt(dx + 20),
+                @floatFromInt(dx + left_pad),
                 @floatFromInt(text_y),
                 label_color,
             );
@@ -3003,7 +3248,7 @@ pub const Workbench = struct {
             // Shortcut text (right-aligned)
             if (item.shortcut.len > 0) {
                 const sc_w = @as(i32, @intCast(item.shortcut.len)) * cell_w;
-                const sc_x = dx + dw - sc_w - 16;
+                const sc_x = dx + dw - sc_w - right_pad;
                 font_atlas.renderText(
                     item.shortcut,
                     @floatFromInt(sc_x),
@@ -3019,9 +3264,9 @@ pub const Workbench = struct {
                 if (y + 1 <= dy + anim_h) {
                     const sep_y = y + @divTrunc(sep_h, 2);
                     renderRegionBackground(Rect{
-                        .x = dx + 8,
+                        .x = dx + left_pad,
                         .y = sep_y,
-                        .w = dw - 16,
+                        .w = dw - left_pad * 2,
                         .h = 1,
                     }, Color.rgb(0x45, 0x45, 0x45));
                 }
@@ -3052,6 +3297,494 @@ pub const Workbench = struct {
             self.breakpoint_lines[self.breakpoint_count] = line;
             self.breakpoint_count += 1;
         }
+    }
+
+    // =========================================================================
+    // File Picker input / rendering
+    // =========================================================================
+
+    /// Handle keyboard input when the file picker overlay is visible.
+    fn handleFilePickerInput(self: *Workbench, vk: u16) void {
+        switch (vk) {
+            VK_ESCAPE => self.file_picker.close(),
+            VK_UP => {
+                if (self.file_picker.selected > 0) {
+                    self.file_picker.selected -= 1;
+                    // Scroll up if selection moves above visible area
+                    if (self.file_picker.selected < self.file_picker.scroll_top) {
+                        self.file_picker.scroll_top = self.file_picker.selected;
+                    }
+                }
+            },
+            VK_DOWN => {
+                if (self.file_picker.filtered_count > 0 and
+                    self.file_picker.selected < self.file_picker.filtered_count - 1)
+                {
+                    self.file_picker.selected += 1;
+                    // Scroll down if selection moves below visible area
+                    const max_vis: u16 = @intCast(file_picker_mod.MAX_VISIBLE_ROWS);
+                    if (self.file_picker.selected >= self.file_picker.scroll_top + max_vis) {
+                        self.file_picker.scroll_top = self.file_picker.selected - max_vis + 1;
+                    }
+                }
+            },
+            VK_RETURN => {
+                const entry = self.file_picker.getSelected() orelse return;
+                if (entry.is_dir) {
+                    // Navigate into directory (or go up for "..")
+                    const name = entry.name[0..entry.name_len];
+                    if (entry.name_len == 2 and entry.name[0] == '.' and entry.name[1] == '.') {
+                        self.file_picker.goUp();
+                    } else {
+                        self.file_picker.enterDirectory(name);
+                    }
+                } else {
+                    // Open or save the selected file
+                    var path_buf: [file_picker_mod.MAX_PATH_LEN]u16 = undefined;
+                    const path_len = self.file_picker.getSelectedPath(&path_buf);
+                    if (path_len > 0) {
+                        path_buf[path_len] = 0; // null-terminate
+                        if (self.file_picker.mode == .save) {
+                            self.storeFilePath(@ptrCast(&path_buf));
+                            self.saveCurrentFile();
+                        } else {
+                            self.openFile(@ptrCast(&path_buf));
+                        }
+                        self.file_picker.close();
+                    }
+                }
+            },
+            VK_BACK => {
+                if (self.file_picker.filter_len > 0) {
+                    // Delete last filter character
+                    self.file_picker.filter_len -= 1;
+                    self.file_picker.updateFilter();
+                } else {
+                    // Empty filter + backspace = go up one directory
+                    self.file_picker.goUp();
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// Handle text input when the file picker overlay is visible.
+    fn handleFilePickerTextInput(self: *Workbench, input: *const InputState) void {
+        var i: u32 = 0;
+        while (i < input.text_input_len) : (i += 1) {
+            const ch = input.text_input[i];
+            if (ch < 0x20) continue; // skip control chars
+            if (self.file_picker.filter_len < file_picker_mod.MAX_FILTER_LEN) {
+                self.file_picker.filter_buf[self.file_picker.filter_len] = ch;
+                self.file_picker.filter_len += 1;
+            }
+        }
+        if (input.text_input_len > 0) {
+            self.file_picker.updateFilter();
+        }
+    }
+
+    /// Handle mouse click on the file picker overlay.
+    /// Computes the same geometry as renderFilePicker for hit-testing.
+    fn handleFilePickerClick(self: *Workbench, mx: i32, my: i32, layout: *const LayoutState) void {
+        const win_w = layout.window_w;
+        const win_h = layout.window_h;
+        const line_h = self.cell_h;
+
+        // Recompute picker geometry (must match renderFilePicker exactly)
+        const max_rows: i32 = 14;
+        const row_h: i32 = line_h + 6;
+        const header_h: i32 = 36;
+        const input_h: i32 = 34;
+        const footer_h: i32 = 28;
+        const picker_w: i32 = @min(640, win_w - 80);
+        const list_h: i32 = max_rows * row_h;
+        const picker_h: i32 = header_h + input_h + list_h + footer_h;
+        const picker_x: i32 = @divTrunc(win_w - picker_w, 2);
+
+        const ease = self.file_picker_anim;
+        const anim = 1.0 - (1.0 - ease) * (1.0 - ease) * (1.0 - ease);
+        const final_y: f32 = @floatFromInt(@divTrunc(win_h - picker_h, 5));
+        const slide_offset: f32 = -30.0 * (1.0 - anim);
+        const picker_y: i32 = @intFromFloat(final_y + slide_offset);
+
+        // Check if click is inside the picker panel
+        const inside = mx >= picker_x and mx < picker_x + picker_w and
+            my >= picker_y and my < picker_y + picker_h;
+
+        if (!inside) {
+            // Click on backdrop — close the picker
+            self.file_picker.close();
+            return;
+        }
+
+        // Compute list area bounds
+        const hdr_y = picker_y + 2;
+        const inp_y = hdr_y + header_h + 4;
+        const list_y_start = inp_y + 26 + 4; // inp_inner_h=26 + 4px gap
+
+        // Check if click is in the file list area
+        if (my >= list_y_start and my < list_y_start + list_h) {
+            // Determine which row was clicked
+            const rel_y = my - list_y_start;
+            const clicked_row: u16 = @intCast(@divTrunc(rel_y, row_h));
+            const clicked_idx = self.file_picker.scroll_top + clicked_row;
+
+            if (clicked_idx < self.file_picker.filtered_count) {
+                // Check for double-click (same item within 400ms)
+                const now = self.accumulated_time;
+                const is_double = (clicked_idx == self.file_picker_last_click_idx and
+                    (now - self.file_picker_last_click) < 0.4);
+
+                self.file_picker.selected = clicked_idx;
+                self.file_picker_last_click = now;
+                self.file_picker_last_click_idx = clicked_idx;
+
+                if (is_double) {
+                    // Double-click: open file or enter directory
+                    self.handleFilePickerInput(VK_RETURN);
+                    self.file_picker_last_click_idx = 0xFFFF; // reset to prevent triple-click
+                }
+            }
+        }
+
+        // Clicks on header, input, or footer are consumed but do nothing special
+    }
+
+    /// Update file picker hover row based on mouse position (called every frame).
+    fn updateFilePickerHover(self: *Workbench, mx: i32, my: i32, layout: *const LayoutState) void {
+        const win_w = layout.window_w;
+        const win_h = layout.window_h;
+        const line_h = self.cell_h;
+
+        const max_rows: i32 = 14;
+        const row_h: i32 = line_h + 6;
+        const header_h: i32 = 36;
+        const picker_w: i32 = @min(640, win_w - 80);
+        const list_h: i32 = max_rows * row_h;
+        const picker_h: i32 = header_h + 34 + list_h + 28;
+        const picker_x: i32 = @divTrunc(win_w - picker_w, 2);
+
+        const ease = self.file_picker_anim;
+        const anim = 1.0 - (1.0 - ease) * (1.0 - ease) * (1.0 - ease);
+        const final_y: f32 = @floatFromInt(@divTrunc(win_h - picker_h, 5));
+        const slide_offset: f32 = -30.0 * (1.0 - anim);
+        const picker_y: i32 = @intFromFloat(final_y + slide_offset);
+
+        const hdr_y = picker_y + 2;
+        const inp_y = hdr_y + header_h + 4;
+        const list_y_start = inp_y + 26 + 4;
+
+        // Check if mouse is in the list area
+        if (mx >= picker_x and mx < picker_x + picker_w and
+            my >= list_y_start and my < list_y_start + list_h)
+        {
+            const rel_y = my - list_y_start;
+            const hover_row: i16 = @intCast(@divTrunc(rel_y, row_h));
+            const hover_idx = @as(u16, @intCast(hover_row)) + self.file_picker.scroll_top;
+            if (hover_idx < self.file_picker.filtered_count) {
+                self.file_picker_hover_row = hover_row;
+            } else {
+                self.file_picker_hover_row = -1;
+            }
+        } else {
+            self.file_picker_hover_row = -1;
+        }
+    }
+
+    /// Render the file picker overlay with animated, polished UI.
+    fn renderFilePicker(self: *const Workbench, layout: *const LayoutState, font_atlas: *const FontAtlas) void {
+        const t = self.file_picker_anim; // 0..1 animation progress
+        if (t <= 0.001) return; // not visible yet
+
+        // Ease-out cubic for smooth deceleration
+        const ease = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+
+        const win_w = layout.window_w;
+        const win_h = layout.window_h;
+        const line_h = font_atlas.cell_h;
+        const cw = font_atlas.cell_w;
+
+        // ── Full-screen dimmed backdrop ──────────────────────────────
+        gl.glEnable(gl.GL_BLEND);
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+        gl.glDisable(gl.GL_TEXTURE_2D);
+        gl.glColor4f(0.0, 0.0, 0.0, 0.55 * ease);
+        gl.glBegin(gl.GL_QUADS);
+        gl.glVertex2f(0, 0);
+        gl.glVertex2f(@floatFromInt(win_w), 0);
+        gl.glVertex2f(@floatFromInt(win_w), @floatFromInt(win_h));
+        gl.glVertex2f(0, @floatFromInt(win_h));
+        gl.glEnd();
+
+        // ── Panel dimensions ─────────────────────────────────────────
+        const max_rows: i32 = 14;
+        const row_h: i32 = line_h + 6; // generous row height
+        const header_h: i32 = 36;
+        const input_h: i32 = 34;
+        const footer_h: i32 = 28;
+        const picker_w: i32 = @min(640, win_w - 80);
+        const list_h: i32 = max_rows * row_h;
+        const picker_h: i32 = header_h + input_h + list_h + footer_h;
+        const picker_x: i32 = @divTrunc(win_w - picker_w, 2);
+        // Slide down from above: start 30px above final position
+        const final_y: f32 = @floatFromInt(@divTrunc(win_h - picker_h, 5)); // upper third
+        const slide_offset: f32 = -30.0 * (1.0 - ease);
+        const picker_y_f: f32 = final_y + slide_offset;
+        const picker_y: i32 = @intFromFloat(picker_y_f);
+
+        const alpha: f32 = ease; // overall panel alpha
+
+        // ── Colors ───────────────────────────────────────────────────
+        const accent = Color{ .r = 0.0, .g = 0.48, .b = 0.80, .a = alpha }; // #007ACC
+        const accent_glow = Color{ .r = 0.0, .g = 0.48, .b = 0.80, .a = alpha * 0.3 };
+        const panel_bg = Color{ .r = 0.145, .g = 0.145, .b = 0.145, .a = alpha * 0.98 }; // #252525
+        const header_bg = Color{ .r = 0.18, .g = 0.18, .b = 0.18, .a = alpha }; // #2E2E2E
+        const input_bg = Color{ .r = 0.22, .g = 0.22, .b = 0.22, .a = alpha }; // #383838
+        const input_border = Color{ .r = 0.0, .g = 0.48, .b = 0.80, .a = alpha * 0.6 };
+        const text_primary = Color{ .r = 0.83, .g = 0.83, .b = 0.83, .a = alpha };
+        const text_dim = Color{ .r = 0.45, .g = 0.45, .b = 0.45, .a = alpha };
+        const text_accent = Color{ .r = 0.40, .g = 0.70, .b = 1.0, .a = alpha };
+        const sel_bg = Color{ .r = 0.02, .g = 0.22, .b = 0.37, .a = alpha }; // #04395E
+        const sel_border = Color{ .r = 0.0, .g = 0.48, .b = 0.80, .a = alpha * 0.5 };
+        const dir_icon_color = Color{ .r = 0.86, .g = 0.74, .b = 0.42, .a = alpha }; // golden
+        const file_icon_color = Color{ .r = 0.55, .g = 0.65, .b = 0.80, .a = alpha }; // steel blue
+        const footer_bg = Color{ .r = 0.16, .g = 0.16, .b = 0.16, .a = alpha };
+        const shadow_color = Color{ .r = 0.0, .g = 0.0, .b = 0.0, .a = alpha * 0.4 };
+        const scrollbar_bg = Color{ .r = 0.20, .g = 0.20, .b = 0.20, .a = alpha * 0.5 };
+        const scrollbar_fg = Color{ .r = 0.45, .g = 0.45, .b = 0.45, .a = alpha * 0.7 };
+
+        // ── Drop shadow (layered rects for soft shadow) ──────────────
+        renderAlphaRect(picker_x - 4, picker_y + 4, picker_w + 8, picker_h + 4, shadow_color);
+        renderAlphaRect(picker_x - 2, picker_y + 2, picker_w + 4, picker_h + 2, Color{ .r = 0.0, .g = 0.0, .b = 0.0, .a = alpha * 0.25 });
+
+        // ── Main panel background ────────────────────────────────────
+        renderAlphaRect(picker_x, picker_y, picker_w, picker_h, panel_bg);
+
+        // ── Top accent line (gradient-like: bright center, fading edges) ──
+        const accent_y = picker_y;
+        renderAlphaRect(picker_x, accent_y, picker_w, 2, accent);
+        // Glow below accent line
+        renderAlphaRect(picker_x, accent_y + 2, picker_w, 3, accent_glow);
+
+        // ── Header bar ───────────────────────────────────────────────
+        const hdr_y = picker_y + 2;
+        renderAlphaRect(picker_x, hdr_y, picker_w, header_h, header_bg);
+
+        // Mode icon (small colored square)
+        const icon_size: i32 = 14;
+        const icon_y = hdr_y + @divTrunc(header_h - icon_size, 2);
+        const icon_color = if (self.file_picker.mode == .save) Color{ .r = 0.30, .g = 0.75, .b = 0.40, .a = alpha } else accent;
+        renderAlphaRect(picker_x + 12, icon_y, icon_size, icon_size, icon_color);
+        // Inner highlight on icon
+        renderAlphaRect(picker_x + 14, icon_y + 2, icon_size - 4, icon_size - 4, Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = alpha * 0.15 });
+
+        // Mode label
+        const mode_label: []const u8 = if (self.file_picker.mode == .save) "Save As" else "Open File";
+        font_atlas.renderText(
+            mode_label,
+            @floatFromInt(picker_x + 32),
+            @floatFromInt(hdr_y + @divTrunc(header_h - line_h, 2)),
+            text_accent,
+        );
+
+        // Breadcrumb path (right side of header)
+        var dir_utf8: [file_picker_mod.MAX_PATH_LEN]u8 = undefined;
+        const dir_len = self.file_picker.getCurrentDirUtf8(&dir_utf8);
+        if (dir_len > 0) {
+            // Truncate path to fit: show last N chars with leading "..."
+            const max_path_chars: u16 = @intCast(@max(10, @divTrunc(picker_w - 200, cw)));
+            var path_start: u16 = 0;
+            var show_ellipsis = false;
+            if (dir_len > max_path_chars) {
+                path_start = dir_len - max_path_chars;
+                show_ellipsis = true;
+            }
+            const path_x = picker_x + picker_w - @as(i32, @intCast(dir_len - path_start)) * cw - 12 - (if (show_ellipsis) cw * 3 else @as(i32, 0));
+            if (show_ellipsis) {
+                font_atlas.renderText("...", @floatFromInt(path_x), @floatFromInt(hdr_y + @divTrunc(header_h - line_h, 2)), text_dim);
+            }
+            font_atlas.renderText(
+                dir_utf8[path_start..dir_len],
+                @floatFromInt(path_x + (if (show_ellipsis) cw * 3 else @as(i32, 0))),
+                @floatFromInt(hdr_y + @divTrunc(header_h - line_h, 2)),
+                text_dim,
+            );
+        }
+
+        // Header bottom separator
+        renderAlphaRect(picker_x + 8, hdr_y + header_h - 1, picker_w - 16, 1, Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = alpha * 0.06 });
+
+        // ── Search / filter input field ──────────────────────────────
+        const inp_y = hdr_y + header_h + 4;
+        const inp_x = picker_x + 10;
+        const inp_w = picker_w - 20;
+        const inp_inner_h: i32 = 26;
+
+        // Input background
+        renderAlphaRect(inp_x, inp_y, inp_w, inp_inner_h, input_bg);
+        // Input focus border (1px)
+        renderAlphaRect(inp_x, inp_y, inp_w, 1, input_border); // top
+        renderAlphaRect(inp_x, inp_y + inp_inner_h - 1, inp_w, 1, input_border); // bottom
+        renderAlphaRect(inp_x, inp_y, 1, inp_inner_h, input_border); // left
+        renderAlphaRect(inp_x + inp_w - 1, inp_y, 1, inp_inner_h, input_border); // right
+
+        // Search icon (magnifying glass: small circle + line)
+        const search_cx: f32 = @floatFromInt(inp_x + 14);
+        const search_cy: f32 = @floatFromInt(inp_y + @divTrunc(inp_inner_h, 2));
+        renderSearchIcon(search_cx, search_cy, 5.0, text_dim);
+
+        // Filter text or placeholder
+        const text_x = inp_x + 28;
+        const text_y = inp_y + @divTrunc(inp_inner_h - line_h, 2);
+        if (self.file_picker.filter_len > 0) {
+            font_atlas.renderText(
+                self.file_picker.filter_buf[0..self.file_picker.filter_len],
+                @floatFromInt(text_x),
+                @floatFromInt(text_y),
+                text_primary,
+            );
+        } else {
+            font_atlas.renderText(
+                "Search files and folders...",
+                @floatFromInt(text_x),
+                @floatFromInt(text_y),
+                text_dim,
+            );
+        }
+
+        // Blinking cursor
+        if (self.cursor_visible) {
+            const cur_x = text_x + @as(i32, @intCast(self.file_picker.filter_len)) * cw;
+            renderAlphaRect(cur_x, inp_y + 4, 2, inp_inner_h - 8, text_accent);
+        }
+
+        // ── File list area ───────────────────────────────────────────
+        const list_y_start = inp_y + inp_inner_h + 4;
+        const scroll = self.file_picker.scroll_top;
+
+        // Enable scissor to clip file list
+        gl.glEnable(gl.GL_SCISSOR_TEST);
+        // GL scissor uses bottom-left origin, so flip Y
+        const scissor_bottom = win_h - (list_y_start + list_h);
+        gl.glScissor(picker_x, scissor_bottom, picker_w, list_h);
+
+        var row: u16 = 0;
+        while (row < @as(u16, @intCast(max_rows))) : (row += 1) {
+            const idx = scroll + row;
+            if (idx >= self.file_picker.filtered_count) break;
+
+            const entry_idx = self.file_picker.filtered[idx];
+            const entry = &self.file_picker.entries[entry_idx];
+            const name = entry.name[0..entry.name_len];
+            const item_y = list_y_start + @as(i32, @intCast(row)) * row_h;
+            const is_selected = (idx == self.file_picker.selected);
+            const is_dotdot = (entry.name_len == 2 and entry.name[0] == '.' and entry.name[1] == '.');
+
+            // Selection highlight with left accent bar
+            if (is_selected) {
+                renderAlphaRect(picker_x + 4, item_y + 1, picker_w - 8, row_h - 2, sel_bg);
+                // Left accent bar
+                renderAlphaRect(picker_x + 4, item_y + 3, 3, row_h - 6, sel_border);
+            } else if (self.file_picker_hover_row >= 0 and @as(u16, @intCast(self.file_picker_hover_row)) == row) {
+                // Hover highlight (subtle)
+                renderAlphaRect(picker_x + 4, item_y + 1, picker_w - 8, row_h - 2, Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = alpha * 0.05 });
+            }
+
+            // Row content X positions
+            const icon_x = picker_x + 16;
+            const label_x = icon_x + 24;
+            const row_text_y = item_y + @divTrunc(row_h - line_h, 2);
+
+            if (is_dotdot) {
+                // ".." parent directory — render arrow icon
+                renderArrowUp(@floatFromInt(icon_x + 4), @floatFromInt(row_text_y + @divTrunc(line_h, 2)), 5.0, text_accent);
+                font_atlas.renderText("..", @floatFromInt(label_x), @floatFromInt(row_text_y), text_accent);
+            } else if (entry.is_dir) {
+                // Directory — render folder icon (filled rectangle with tab)
+                renderFolderIcon(icon_x, row_text_y + 1, line_h - 2, dir_icon_color);
+                font_atlas.renderText(
+                    name,
+                    @floatFromInt(label_x),
+                    @floatFromInt(row_text_y),
+                    if (is_selected) Color{ .r = 0.95, .g = 0.85, .b = 0.55, .a = alpha } else dir_icon_color,
+                );
+            } else {
+                // File — render file icon (rectangle with folded corner)
+                renderFileIcon(icon_x, row_text_y + 1, line_h - 2, file_icon_color);
+
+                // Color-code by extension
+                const name_color = fileNameColor(name, alpha, is_selected);
+                font_atlas.renderText(name, @floatFromInt(label_x), @floatFromInt(row_text_y), name_color);
+
+                // File extension badge (right-aligned, dimmed)
+                const ext = fileExtension(name);
+                if (ext.len > 0 and ext.len < 8) {
+                    const ext_x = picker_x + picker_w - @as(i32, @intCast(ext.len)) * cw - 24;
+                    font_atlas.renderText(ext, @floatFromInt(ext_x), @floatFromInt(row_text_y), text_dim);
+                }
+            }
+
+            // Subtle row separator
+            if (row + 1 < @as(u16, @intCast(max_rows)) and idx + 1 < self.file_picker.filtered_count) {
+                renderAlphaRect(picker_x + 14, item_y + row_h - 1, picker_w - 28, 1, Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = alpha * 0.04 });
+            }
+        }
+
+        gl.glDisable(gl.GL_SCISSOR_TEST);
+
+        // ── Scrollbar (right edge of list area) ──────────────────────
+        if (self.file_picker.filtered_count > @as(u16, @intCast(max_rows))) {
+            const sb_x = picker_x + picker_w - 8;
+            const sb_w: i32 = 4;
+            const total: f32 = @floatFromInt(self.file_picker.filtered_count);
+            const visible: f32 = @floatFromInt(max_rows);
+            const thumb_ratio = visible / total;
+            const thumb_h: i32 = @max(12, @as(i32, @intFromFloat(thumb_ratio * @as(f32, @floatFromInt(list_h)))));
+            const scroll_ratio = @as(f32, @floatFromInt(scroll)) / @max(1.0, total - visible);
+            const thumb_y = list_y_start + @as(i32, @intFromFloat(scroll_ratio * @as(f32, @floatFromInt(list_h - thumb_h))));
+
+            // Track
+            renderAlphaRect(sb_x, list_y_start, sb_w, list_h, scrollbar_bg);
+            // Thumb
+            renderAlphaRect(sb_x, thumb_y, sb_w, thumb_h, scrollbar_fg);
+        }
+
+        // ── Empty state ──────────────────────────────────────────────
+        if (self.file_picker.filtered_count == 0) {
+            const empty_y = list_y_start + @divTrunc(list_h, 2) - line_h;
+            font_atlas.renderText(
+                "No matching files",
+                @floatFromInt(picker_x + @divTrunc(picker_w - 17 * cw, 2)),
+                @floatFromInt(empty_y),
+                text_dim,
+            );
+        }
+
+        // ── Footer bar ───────────────────────────────────────────────
+        const ftr_y = list_y_start + list_h;
+        renderAlphaRect(picker_x, ftr_y, picker_w, footer_h, footer_bg);
+        // Separator line
+        renderAlphaRect(picker_x + 8, ftr_y, picker_w - 16, 1, Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = alpha * 0.06 });
+
+        // Item count
+        var count_buf: [32]u8 = undefined;
+        const count_str = formatCount(self.file_picker.filtered_count, self.file_picker.entry_count, &count_buf);
+        font_atlas.renderText(count_str, @floatFromInt(picker_x + 12), @floatFromInt(ftr_y + @divTrunc(footer_h - line_h, 2)), text_dim);
+
+        // Keyboard hints (right side)
+        const hints = "Enter:Open  Esc:Close  Bksp:Up";
+        const hints_x = picker_x + picker_w - @as(i32, @intCast(hints.len)) * cw - 12;
+        font_atlas.renderText(hints, @floatFromInt(hints_x), @floatFromInt(ftr_y + @divTrunc(footer_h - line_h, 2)), text_dim);
+
+        // ── Bottom accent line ───────────────────────────────────────
+        renderAlphaRect(picker_x, ftr_y + footer_h - 2, picker_w, 2, accent);
+
+        // ── Side borders (subtle) ────────────────────────────────────
+        renderAlphaRect(picker_x, picker_y, 1, picker_h, Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = alpha * 0.08 });
+        renderAlphaRect(picker_x + picker_w - 1, picker_y, 1, picker_h, Color{ .r = 0.0, .g = 0.0, .b = 0.0, .a = alpha * 0.3 });
+
+        gl.glDisable(gl.GL_BLEND);
     }
 };
 
@@ -3134,6 +3867,212 @@ fn renderRegionBackground(region: Rect, color: Color) void {
     gl.glVertex2f(x1, y1);
     gl.glVertex2f(x0, y1);
     gl.glEnd();
+}
+
+// =============================================================================
+// File picker rendering helpers
+// =============================================================================
+
+/// Draw a filled rectangle with alpha blending (assumes GL_BLEND is already enabled).
+fn renderAlphaRect(x: i32, y: i32, w: i32, h: i32, color: Color) void {
+    gl.glDisable(gl.GL_TEXTURE_2D);
+    gl.glColor4f(color.r, color.g, color.b, color.a);
+    const x0: f32 = @floatFromInt(x);
+    const y0: f32 = @floatFromInt(y);
+    const x1: f32 = @floatFromInt(x + w);
+    const y1: f32 = @floatFromInt(y + h);
+    gl.glBegin(gl.GL_QUADS);
+    gl.glVertex2f(x0, y0);
+    gl.glVertex2f(x1, y0);
+    gl.glVertex2f(x1, y1);
+    gl.glVertex2f(x0, y1);
+    gl.glEnd();
+}
+
+/// Render a magnifying glass search icon using GL lines.
+fn renderSearchIcon(cx: f32, cy: f32, radius: f32, color: Color) void {
+    gl.glDisable(gl.GL_TEXTURE_2D);
+    gl.glColor4f(color.r, color.g, color.b, color.a);
+    gl.glLineWidth(1.5);
+    // Circle (approximated with 12 segments)
+    gl.glBegin(gl.GL_LINE_LOOP);
+    comptime var i: usize = 0;
+    inline while (i < 12) : (i += 1) {
+        const angle: f32 = @as(f32, @floatFromInt(i)) * (2.0 * 3.14159 / 12.0);
+        gl.glVertex2f(cx + radius * @cos(angle), cy + radius * @sin(angle));
+    }
+    gl.glEnd();
+    // Handle (line from bottom-right of circle outward)
+    const hx = cx + radius * 0.707;
+    const hy = cy + radius * 0.707;
+    gl.glBegin(gl.GL_LINES);
+    gl.glVertex2f(hx, hy);
+    gl.glVertex2f(hx + radius * 0.6, hy + radius * 0.6);
+    gl.glEnd();
+    gl.glLineWidth(1.0);
+}
+
+/// Render a folder icon (rectangle with a tab on top-left).
+fn renderFolderIcon(x: i32, y: i32, size: i32, color: Color) void {
+    gl.glDisable(gl.GL_TEXTURE_2D);
+    const s: f32 = @floatFromInt(size);
+    const fx: f32 = @floatFromInt(x);
+    const fy: f32 = @floatFromInt(y);
+    const tab_w = s * 0.4;
+    const tab_h = s * 0.2;
+
+    // Tab (top-left flap)
+    gl.glColor4f(color.r * 0.85, color.g * 0.85, color.b * 0.85, color.a);
+    gl.glBegin(gl.GL_QUADS);
+    gl.glVertex2f(fx, fy);
+    gl.glVertex2f(fx + tab_w, fy);
+    gl.glVertex2f(fx + tab_w + tab_h * 0.5, fy + tab_h);
+    gl.glVertex2f(fx, fy + tab_h);
+    gl.glEnd();
+
+    // Main body
+    gl.glColor4f(color.r, color.g, color.b, color.a);
+    gl.glBegin(gl.GL_QUADS);
+    gl.glVertex2f(fx, fy + tab_h);
+    gl.glVertex2f(fx + s * 0.9, fy + tab_h);
+    gl.glVertex2f(fx + s * 0.9, fy + s);
+    gl.glVertex2f(fx, fy + s);
+    gl.glEnd();
+
+    // Highlight stripe (top of body)
+    gl.glColor4f(1.0, 1.0, 1.0, color.a * 0.12);
+    gl.glBegin(gl.GL_QUADS);
+    gl.glVertex2f(fx, fy + tab_h);
+    gl.glVertex2f(fx + s * 0.9, fy + tab_h);
+    gl.glVertex2f(fx + s * 0.9, fy + tab_h + 1.0);
+    gl.glVertex2f(fx, fy + tab_h + 1.0);
+    gl.glEnd();
+}
+
+/// Render a file icon (rectangle with folded corner).
+fn renderFileIcon(x: i32, y: i32, size: i32, color: Color) void {
+    gl.glDisable(gl.GL_TEXTURE_2D);
+    const s: f32 = @floatFromInt(size);
+    const fx: f32 = @floatFromInt(x);
+    const fy: f32 = @floatFromInt(y);
+    const fold = s * 0.25;
+    const w = s * 0.7;
+
+    // Main body (with corner cut)
+    gl.glColor4f(color.r, color.g, color.b, color.a);
+    gl.glBegin(gl.GL_QUADS);
+    gl.glVertex2f(fx, fy);
+    gl.glVertex2f(fx + w - fold, fy);
+    gl.glVertex2f(fx + w - fold, fy + s);
+    gl.glVertex2f(fx, fy + s);
+    gl.glEnd();
+    // Right column below fold
+    gl.glBegin(gl.GL_QUADS);
+    gl.glVertex2f(fx + w - fold, fy + fold);
+    gl.glVertex2f(fx + w, fy + fold);
+    gl.glVertex2f(fx + w, fy + s);
+    gl.glVertex2f(fx + w - fold, fy + s);
+    gl.glEnd();
+    // Fold triangle
+    gl.glColor4f(color.r * 0.7, color.g * 0.7, color.b * 0.7, color.a);
+    gl.glBegin(gl.GL_TRIANGLES);
+    gl.glVertex2f(fx + w - fold, fy);
+    gl.glVertex2f(fx + w, fy + fold);
+    gl.glVertex2f(fx + w - fold, fy + fold);
+    gl.glEnd();
+}
+
+/// Render an upward-pointing arrow (for ".." parent directory).
+fn renderArrowUp(cx: f32, cy: f32, size: f32, color: Color) void {
+    gl.glDisable(gl.GL_TEXTURE_2D);
+    gl.glColor4f(color.r, color.g, color.b, color.a);
+    gl.glBegin(gl.GL_TRIANGLES);
+    gl.glVertex2f(cx, cy - size);
+    gl.glVertex2f(cx - size * 0.7, cy + size * 0.3);
+    gl.glVertex2f(cx + size * 0.7, cy + size * 0.3);
+    gl.glEnd();
+    // Stem
+    gl.glBegin(gl.GL_QUADS);
+    gl.glVertex2f(cx - size * 0.2, cy + size * 0.3);
+    gl.glVertex2f(cx + size * 0.2, cy + size * 0.3);
+    gl.glVertex2f(cx + size * 0.2, cy + size);
+    gl.glVertex2f(cx - size * 0.2, cy + size);
+    gl.glEnd();
+}
+
+/// Get the file extension from a filename (e.g., "main.zig" → ".zig").
+fn fileExtension(name: []const u8) []const u8 {
+    var i: usize = name.len;
+    while (i > 0) {
+        i -= 1;
+        if (name[i] == '.') return name[i..];
+    }
+    return "";
+}
+
+/// Color-code a filename by extension for visual variety.
+fn fileNameColor(name: []const u8, alpha: f32, selected: bool) Color {
+    if (selected) return Color{ .r = 0.95, .g = 0.95, .b = 0.95, .a = alpha };
+    const ext = fileExtension(name);
+    if (ext.len == 0) return Color{ .r = 0.83, .g = 0.83, .b = 0.83, .a = alpha };
+    // Zig files — orange
+    if (strEql(ext, ".zig")) return Color{ .r = 0.95, .g = 0.65, .b = 0.25, .a = alpha };
+    // Config/build files
+    if (strEql(ext, ".json") or strEql(ext, ".toml") or strEql(ext, ".yml") or strEql(ext, ".yaml"))
+        return Color{ .r = 0.60, .g = 0.85, .b = 0.45, .a = alpha };
+    // Markdown / text
+    if (strEql(ext, ".md") or strEql(ext, ".txt") or strEql(ext, ".rst"))
+        return Color{ .r = 0.55, .g = 0.75, .b = 0.95, .a = alpha };
+    // Scripts
+    if (strEql(ext, ".py") or strEql(ext, ".sh") or strEql(ext, ".bat") or strEql(ext, ".ps1"))
+        return Color{ .r = 0.70, .g = 0.55, .b = 0.90, .a = alpha };
+    // Images / resources
+    if (strEql(ext, ".ico") or strEql(ext, ".png") or strEql(ext, ".bmp") or strEql(ext, ".svg"))
+        return Color{ .r = 0.90, .g = 0.55, .b = 0.70, .a = alpha };
+    // C/C++ headers/sources
+    if (strEql(ext, ".c") or strEql(ext, ".h") or strEql(ext, ".cpp") or strEql(ext, ".hpp"))
+        return Color{ .r = 0.45, .g = 0.70, .b = 0.95, .a = alpha };
+    return Color{ .r = 0.83, .g = 0.83, .b = 0.83, .a = alpha };
+}
+
+/// Format "N of M items" into a fixed buffer. Returns the slice.
+fn formatCount(filtered: u16, total: u16, buf: *[32]u8) []const u8 {
+    var pos: usize = 0;
+    // Write filtered count
+    pos = writeU16(buf, pos, filtered);
+    const of_str = " of ";
+    @memcpy(buf[pos..][0..of_str.len], of_str);
+    pos += of_str.len;
+    // Write total count
+    pos = writeU16(buf, pos, total);
+    const items_str = " items";
+    @memcpy(buf[pos..][0..items_str.len], items_str);
+    pos += items_str.len;
+    return buf[0..pos];
+}
+
+/// Write a u16 as decimal digits into buf at pos. Returns new pos.
+fn writeU16(buf: *[32]u8, start: usize, val: u16) usize {
+    if (val == 0) {
+        buf[start] = '0';
+        return start + 1;
+    }
+    var digits: [5]u8 = undefined;
+    var dcount: usize = 0;
+    var v = val;
+    while (v > 0) {
+        digits[dcount] = @intCast(v % 10 + '0');
+        dcount += 1;
+        v /= 10;
+    }
+    var pos = start;
+    var i: usize = dcount;
+    while (i > 0) {
+        i -= 1;
+        buf[pos] = digits[i];
+        pos += 1;
+    }
+    return pos;
 }
 
 // =============================================================================

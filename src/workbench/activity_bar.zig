@@ -67,10 +67,13 @@ pub const ActivityBar = struct {
 
         if (region.w <= 0 or region.h <= 0) return;
 
+        // Derive icon button height from font size for DPI scaling
+        const icon_btn_h: i32 = font_atlas.cell_h * 3; // ~3x cell height
+
         // Draw each icon button
         var i: usize = 0;
         while (i < ICON_COUNT) : (i += 1) {
-            const btn_y = region.y + @as(i32, @intCast(i)) * ICON_BTN_H;
+            const btn_y = region.y + @as(i32, @intCast(i)) * icon_btn_h;
             const is_active = (i == self.active_icon);
             const color = if (is_active) ICON_ACTIVE_COLOR else ICON_INACTIVE_COLOR;
 
@@ -80,7 +83,7 @@ pub const ActivityBar = struct {
                     .x = region.x,
                     .y = btn_y,
                     .w = INDICATOR_W,
-                    .h = ICON_BTN_H,
+                    .h = icon_btn_h,
                 }, ACTIVE_INDICATOR);
             }
 
@@ -88,7 +91,7 @@ pub const ActivityBar = struct {
             const symbol = ICON_SYMBOLS[i];
             const sym_w = @as(i32, @intCast(symbol.len)) * font_atlas.cell_w;
             const text_x = region.x + @divTrunc(region.w - sym_w, 2);
-            const text_y = btn_y + @divTrunc(ICON_BTN_H - font_atlas.cell_h, 2);
+            const text_y = btn_y + @divTrunc(icon_btn_h - font_atlas.cell_h, 2);
 
             font_atlas.renderText(symbol, @floatFromInt(text_x), @floatFromInt(text_y), color);
         }
