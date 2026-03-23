@@ -60,6 +60,9 @@ const ICON_SYMBOLS = [ICON_COUNT][]const u8{
 pub const ActivityBar = struct {
     active_icon: u8 = 0,
 
+    /// GL texture IDs for icon images (0 = not loaded, use text fallback).
+    icon_textures: [ICON_COUNT]gl.GLuint = [_]gl.GLuint{0} ** ICON_COUNT,
+
     /// Render the activity bar into the given region.
     pub fn render(self: *const ActivityBar, region: Rect, font_atlas: *const FontAtlas) void {
         // Draw background
@@ -87,13 +90,19 @@ pub const ActivityBar = struct {
                 }, ACTIVE_INDICATOR);
             }
 
-            // Render icon symbol centered in the button area
-            const symbol = ICON_SYMBOLS[i];
-            const sym_w = @as(i32, @intCast(symbol.len)) * font_atlas.cell_w;
-            const text_x = region.x + @divTrunc(region.w - sym_w, 2);
-            const text_y = btn_y + @divTrunc(icon_btn_h - font_atlas.cell_h, 2);
-
-            font_atlas.renderText(symbol, @floatFromInt(text_x), @floatFromInt(text_y), color);
+            // Render icon: textured quad if texture available, text fallback otherwise
+            if (self.icon_textures[i] != 0) {
+                const icon_sz = @min(font_atlas.cell_h * 2, region.w - 12);
+                const ix = region.x + @divTrunc(region.w - icon_sz, 2);
+                const iy = btn_y + @divTrunc(icon_btn_h - icon_sz, 2);
+                renderTexturedQuad(self.icon_textures[i], ix, iy, icon_sz, icon_sz, color);
+            } else {
+                const symbol = ICON_SYMBOLS[i];
+                const sym_w = @as(i32, @intCast(symbol.len)) * font_atlas.cell_w;
+                const text_x = region.x + @divTrunc(region.w - sym_w, 2);
+                const text_y = btn_y + @divTrunc(icon_btn_h - font_atlas.cell_h, 2);
+                font_atlas.renderText(symbol, @floatFromInt(text_x), @floatFromInt(text_y), color);
+            }
         }
 
         // Draw right border (1px separator)
@@ -125,6 +134,30 @@ fn renderQuad(region: Rect, color: Color) void {
     gl.glVertex2f(x1, y1);
     gl.glVertex2f(x0, y1);
     gl.glEnd();
+}
+
+/// Render a textured quad with color tinting (alpha-blended).
+fn renderTexturedQuad(tex_id: gl.GLuint, x: i32, y: i32, w: i32, h: i32, tint: Color) void {
+    gl.glEnable(gl.GL_TEXTURE_2D);
+    gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id);
+    gl.glColor4f(tint.r, tint.g, tint.b, tint.a);
+
+    const x0: f32 = @floatFromInt(x);
+    const y0: f32 = @floatFromInt(y);
+    const x1: f32 = @floatFromInt(x + w);
+    const y1: f32 = @floatFromInt(y + h);
+
+    gl.glBegin(gl.GL_QUADS);
+    gl.glTexCoord2f(0.0, 0.0);
+    gl.glVertex2f(x0, y0);
+    gl.glTexCoord2f(1.0, 0.0);
+    gl.glVertex2f(x1, y0);
+    gl.glTexCoord2f(1.0, 1.0);
+    gl.glVertex2f(x1, y1);
+    gl.glTexCoord2f(0.0, 1.0);
+    gl.glVertex2f(x0, y1);
+    gl.glEnd();
+    gl.glDisable(gl.GL_TEXTURE_2D);
 }
 
 // =============================================================================

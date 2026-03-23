@@ -229,6 +229,16 @@ pub const App = struct {
             self.workbench.search_icon_texture_id = rasterizeIconToTexture(sicon);
         }
 
+        // 7d. Rasterize folder icon (folder.ico) into a GL texture for activity bar
+        const folder_icon = w32.LoadImageW(null, w32.L("src/folder.ico"), w32.IMAGE_ICON, 0, 0, w32.LR_LOADFROMFILE | w32.LR_DEFAULTSIZE);
+        if (folder_icon) |ficon| {
+            self.workbench.activity_bar.icon_textures[0] = rasterizeIconToTexture(ficon); // explorer
+        }
+        // Reuse search icon texture for activity bar search slot
+        if (self.workbench.search_icon_texture_id != 0) {
+            self.workbench.activity_bar.icon_textures[1] = self.workbench.search_icon_texture_id;
+        }
+
         // 8. Scale layout dimensions for DPI, then recompute
         self.layout.title_bar_height = @divTrunc(30 * dpi_scale, 96);
         self.layout.activity_bar_width = @divTrunc(48 * dpi_scale, 96);
