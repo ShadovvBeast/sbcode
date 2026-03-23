@@ -396,6 +396,14 @@ fn windowProc(hwnd: w32.HWND, msg: w32.UINT, wparam: w32.WPARAM, lparam: w32.LPA
             // Title bar drag zone (excluding window control buttons area on the right)
             const title_bar = app.layout.getRegion(.title_bar);
             if (title_bar.contains(pt.x, pt.y)) {
+                // Menu bar labels occupy the left portion of the title bar.
+                // Total menu bar width: left_margin(8) + 8 labels * (chars*cell_w + pad*2)
+                // Label chars: File(4)+Edit(4)+Selection(9)+View(4)+Go(2)+Run(3)+Terminal(8)+Help(4) = 38
+                const cell_w = app.font_atlas.cell_w;
+                const menu_bar_end = 8 + 38 * cell_w + 8 * 20; // MENU_BAR_LEFT + chars*cell_w + count*PAD*2
+                if (pt.x < menu_bar_end and app.workbench.menu_bar_visible) {
+                    return w32.HTCLIENT; // Let menu bar clicks through as client area
+                }
                 // Reserve right 120px for close/min/max buttons
                 if (pt.x < title_bar.x + title_bar.w - 120) {
                     return w32.HTCAPTION;

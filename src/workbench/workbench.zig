@@ -708,7 +708,7 @@ pub const Workbench = struct {
         }
 
         // 12. Dropdown menu overlay (animated, GL-rendered)
-        self.renderDropdownMenu(font_atlas);
+        self.renderDropdownMenu(font_atlas, layout);
     }
 
     // =========================================================================
@@ -2666,7 +2666,7 @@ pub const Workbench = struct {
     }
 
     /// Render the GL-rendered animated dropdown menu.
-    fn renderDropdownMenu(self: *const Workbench, font_atlas: *const FontAtlas) void {
+    fn renderDropdownMenu(self: *const Workbench, font_atlas: *const FontAtlas, layout: *const LayoutState) void {
         if (!self.dropdown_open) return;
         if (self.dropdown_anim <= 0.001) return;
 
@@ -2694,11 +2694,12 @@ pub const Workbench = struct {
         const dy = self.dropdown_y;
         const dw = self.dropdown_w;
 
-        // Enable scissor test to clip the dropdown during animation
+        // Use GL scissor test to clip the dropdown during animation.
+        // glScissor uses bottom-left origin, so flip Y using window height.
+        const win_h = layout.window_h;
+        const scissor_y = win_h - (dy + anim_h); // bottom-left Y
         gl.glEnable(gl.GL_SCISSOR_TEST);
-        // GL scissor uses bottom-left origin, so we need to flip Y
-        // We don't know window height here, so use a large value and rely on the quad clipping
-        gl.glScissor(dx, 0, dw, @intCast(@as(u32, @intCast(@max(0, dy + anim_h)))));
+        gl.glScissor(dx, scissor_y, dw + 4, anim_h + 4); // +4 for shadow
 
         // Enable blending for semi-transparency
         gl.glEnable(gl.GL_BLEND);
