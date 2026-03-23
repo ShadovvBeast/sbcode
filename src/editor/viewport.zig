@@ -130,9 +130,11 @@ pub fn renderEditorViewport(
     scroll_top: u32,
     visible_lines: u32,
     cursor_visible: bool,
+    window_h: i32,
 ) void {
     gl.glEnable(gl.GL_SCISSOR_TEST);
-    gl.glScissor(area.x, area.y, area.w, area.h);
+    const scissor_y = window_h - (area.y + area.h);
+    gl.glScissor(area.x, scissor_y, area.w, area.h);
 
     const line_height: f32 = @floatFromInt(font_atlas.cell_h);
     const cell_w: f32 = @floatFromInt(font_atlas.cell_w);
