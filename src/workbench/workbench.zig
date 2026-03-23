@@ -30,6 +30,8 @@ const context_menu = @import("context_menu");
 const file_picker_mod = @import("file_picker");
 const FilePicker = file_picker_mod.FilePicker;
 const ft = @import("file_tree");
+const manifest = @import("manifest");
+const ext_api = @import("extension");
 
 // Global HWND for window control button clicks
 var global_hwnd: ?win32.HWND = null;
@@ -399,6 +401,12 @@ pub const Workbench = struct {
         // Store the file path for later save operations
         self.storeFilePath(path);
 
+        // Detect language from filename and set highlighter + status bar
+        const lang = manifest.detectLanguage(label_buf[0..label_len]);
+        self.highlighter.language = lang;
+        const lang_name = manifest.getLanguageDisplayName(lang);
+        self.status_bar.setLanguageMode(lang_name);
+
         self.loadContent(data, label_buf[0..label_len]);
     }
 
@@ -440,10 +448,17 @@ pub const Workbench = struct {
     }
 
     /// Register all system commands in the command palette.
-    /// Populates the palette with every action from all menus.
+    /// Populates the palette with every action from all menus plus extension commands.
     pub fn registerDefaultCommands(self: *Workbench) void {
         const command_palette_mod = @import("command_palette");
         command_palette_mod.registerAllActions(&self.command_palette);
+
+        // Register commands from all extensions
+        inline for (manifest.extensions) |extension| {
+            for (extension.commands) |cmd| {
+                self.command_palette.reg(cmd.id, cmd.label, cmd.shortcut, @enumFromInt(@intFromEnum(cmd.category)));
+            }
+        }
     }
 
     /// Dispatch a command by index.

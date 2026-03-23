@@ -38,7 +38,7 @@
 // iterates all extensions at comptime using `inline for`, so there is zero
 // runtime dispatch overhead.
 
-const syntax = @import("syntax");
+pub const syntax = @import("syntax");
 const Color = @import("color").Color;
 
 // =============================================================================
