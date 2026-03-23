@@ -23,11 +23,13 @@ const file_service = @import("file_service");
 const StatusBar = @import("status_bar").StatusBar;
 const ActivityBar = @import("activity_bar").ActivityBar;
 const Sidebar = @import("sidebar").Sidebar;
+const sidebar_mod = @import("sidebar");
 const Panel = @import("panel").Panel;
 const win32 = @import("win32");
 const context_menu = @import("context_menu");
 const file_picker_mod = @import("file_picker");
 const FilePicker = file_picker_mod.FilePicker;
+const ft = @import("file_tree");
 
 // Global HWND for window control button clicks
 var global_hwnd: ?win32.HWND = null;
@@ -183,6 +185,13 @@ pub const Workbench = struct {
     current_file_path: [MAX_FILE_PATH]u16 = [_]u16{0} ** MAX_FILE_PATH,
     current_file_path_len: u32 = 0,
 
+    // Project root path (UTF-16, null-terminated)
+    project_root: [MAX_FILE_PATH]u16 = [_]u16{0} ** MAX_FILE_PATH,
+    project_root_len: u32 = 0,
+    // Project root as UTF-8 for display
+    project_root_utf8: [260]u8 = undefined,
+    project_root_utf8_len: u8 = 0,
+
     // Sidebar / panel visibility (mirrors layout flags)
     sidebar_visible: bool = true,
     panel_visible: bool = true,
@@ -294,6 +303,10 @@ pub const Workbench = struct {
     confirm_dialog_selected: u8 = 0, // 0=Save, 1=Don't Save, 2=Cancel
     confirm_dialog_anim: f32 = 0.0, // fade-in animation
     confirm_dialog_action: u8 = 0, // 0=close window, 1=close tab
+
+    // Window control button hover state: 0=none, 1=minimize, 2=maximize, 3=close
+    wc_hover: u8 = 0,
+    wc_hover_anim: [3]f32 = [_]f32{0.0} ** 3, // smooth hover fade per button
 
     /// Show the unsaved changes confirmation dialog.
     /// action: 0 = close window, 1 = close tab
@@ -426,20 +439,11 @@ pub const Workbench = struct {
         self.saveFile(@ptrCast(&self.current_file_path));
     }
 
-    /// Register default commands in the command palette.
-    ///
-    /// Postconditions:
-    ///   - "Open File", "Save File", "Toggle Sidebar", "Toggle Panel" are registered
+    /// Register all system commands in the command palette.
+    /// Populates the palette with every action from all menus.
     pub fn registerDefaultCommands(self: *Workbench) void {
-        _ = self.command_palette.registerCommand(CMD_OPEN_FILE, "Open File", null, CMD_OPEN_FILE);
-        _ = self.command_palette.registerCommand(CMD_SAVE_FILE, "Save File", null, CMD_SAVE_FILE);
-        _ = self.command_palette.registerCommand(CMD_TOGGLE_SIDEBAR, "Toggle Sidebar", null, CMD_TOGGLE_SIDEBAR);
-        _ = self.command_palette.registerCommand(CMD_TOGGLE_PANEL, "Toggle Panel", null, CMD_TOGGLE_PANEL);
-        _ = self.command_palette.registerCommand(CMD_NEW_FILE, "New File", null, CMD_NEW_FILE);
-        _ = self.command_palette.registerCommand(CMD_SAVE_AS, "Save As", null, CMD_SAVE_AS);
-        _ = self.command_palette.registerCommand(CMD_FIND, "Find", null, CMD_FIND);
-        _ = self.command_palette.registerCommand(CMD_GOTO_LINE, "Go to Line", null, CMD_GOTO_LINE);
-        _ = self.command_palette.registerCommand(CMD_SEARCH_FILES, "Search in Files", null, CMD_SEARCH_FILES);
+        const command_palette_mod = @import("command_palette");
+        command_palette_mod.registerAllActions(&self.command_palette);
     }
 
     /// Dispatch a command by index.
@@ -450,6 +454,7 @@ pub const Workbench = struct {
     ///   - CMD_TOGGLE_SIDEBAR: toggles sidebar_visible
     ///   - CMD_TOGGLE_PANEL: toggles panel_visible
     pub fn dispatchCommand(self: *Workbench, command_index: u16) void {
+        // Low IDs (0-99) are legacy workbench commands
         switch (command_index) {
             CMD_OPEN_FILE => {
                 self.showOpenFileDialog();
@@ -473,15 +478,18 @@ pub const Workbench = struct {
                 self.find_visible = !self.find_visible;
             },
             CMD_GOTO_LINE => {
-                // Use command palette as go-to-line input
                 self.command_palette.toggle();
             },
             CMD_SEARCH_FILES => {
-                // Switch sidebar to search view
                 self.sidebar_visible = true;
-                self.activity_bar.active_icon = 1; // search icon
+                self.activity_bar.active_icon = 1;
             },
-            else => {},
+            else => {
+                // IDs >= 100 are dispatched through the unified menu command system
+                if (command_index >= 100) {
+                    self.dispatchMenuBarCmd(command_index);
+                }
+            },
         }
     }
 
@@ -574,6 +582,58 @@ pub const Workbench = struct {
             self.file_picker_hover_row = -1;
         }
 
+        // Animate command palette (slide-down + fade-in)
+        if (self.command_palette.visible) {
+            if (self.command_palette.anim < 1.0) {
+                self.command_palette.anim = @min(1.0, self.command_palette.anim + @as(f32, @floatCast(delta_time)) * 6.0);
+            }
+            self.updateCommandPaletteHover(input.mouse_x, input.mouse_y, layout);
+        } else {
+            self.command_palette.anim = 0.0;
+            self.command_palette.hover_row = -1;
+        }
+
+        // Update window control button hover state
+        {
+            const title_bar = layout.getRegion(.title_bar);
+            const close_x = title_bar.x + title_bar.w - WINDOW_BTN_WIDTH;
+            const max_x = close_x - WINDOW_BTN_WIDTH;
+            const min_x = max_x - WINDOW_BTN_WIDTH;
+            const btn_h = title_bar.h;
+            const mx = input.mouse_x;
+            const my = input.mouse_y;
+            var new_hover: u8 = 0;
+            if (my >= title_bar.y and my < title_bar.y + btn_h) {
+                if (mx >= close_x and mx < close_x + WINDOW_BTN_WIDTH) {
+                    new_hover = 3;
+                } else if (mx >= max_x and mx < max_x + WINDOW_BTN_WIDTH) {
+                    new_hover = 2;
+                } else if (mx >= min_x and mx < min_x + WINDOW_BTN_WIDTH) {
+                    new_hover = 1;
+                }
+            }
+            self.wc_hover = new_hover;
+            // Animate hover fade (smooth in/out)
+            const dt_f: f32 = @floatCast(delta_time);
+            var bi: u8 = 0;
+            while (bi < 3) : (bi += 1) {
+                const target: f32 = if (new_hover == bi + 1) 1.0 else 0.0;
+                if (self.wc_hover_anim[bi] < target) {
+                    self.wc_hover_anim[bi] = @min(target, self.wc_hover_anim[bi] + dt_f * 10.0);
+                } else if (self.wc_hover_anim[bi] > target) {
+                    self.wc_hover_anim[bi] = @max(target, self.wc_hover_anim[bi] - dt_f * 6.0);
+                }
+            }
+        }
+
+        // Update sidebar hover tracking
+        if (self.sidebar_visible and !self.file_picker.visible and !self.command_palette.visible) {
+            const sidebar_region = layout.getRegion(.sidebar);
+            self.sidebar.updateHover(input.mouse_x, input.mouse_y, sidebar_region, self.cell_h);
+        } else {
+            self.sidebar.hover_row = -1;
+        }
+
         // When confirm dialog is visible, it blocks all other input
         if (self.confirm_dialog_visible) {
             if (input.left_button_pressed) {
@@ -628,8 +688,25 @@ pub const Workbench = struct {
 
         // Handle mouse wheel scrolling
         if (input.scroll_delta != 0) {
-            // File picker scroll takes priority when visible
-            if (self.file_picker.visible) {
+            // Command palette scroll takes priority when visible
+            if (self.command_palette.visible) {
+                const CommandPaletteMod = @import("command_palette");
+                const scroll_lines: i32 = @divTrunc(input.scroll_delta, 40);
+                if (scroll_lines < 0) {
+                    const add: usize = @intCast(@min(-scroll_lines, 255));
+                    self.command_palette.scroll_top +|= add;
+                    const max_scroll = if (self.command_palette.filtered_count > CommandPaletteMod.CommandPalette.MAX_VISIBLE) self.command_palette.filtered_count - CommandPaletteMod.CommandPalette.MAX_VISIBLE else 0;
+                    if (self.command_palette.scroll_top > max_scroll) self.command_palette.scroll_top = max_scroll;
+                } else {
+                    const sub: usize = @intCast(@min(scroll_lines, 255));
+                    if (self.command_palette.scroll_top >= sub) {
+                        self.command_palette.scroll_top -= sub;
+                    } else {
+                        self.command_palette.scroll_top = 0;
+                    }
+                }
+            } else if (self.file_picker.visible) {
+                // File picker scroll
                 const scroll_lines: i32 = @divTrunc(input.scroll_delta, 40);
                 if (scroll_lines < 0) {
                     const add: u16 = @intCast(@min(-scroll_lines, 255));
@@ -645,20 +722,27 @@ pub const Workbench = struct {
                     }
                 }
             } else {
-                const lines: i32 = @divTrunc(input.scroll_delta, 40);
-                if (lines < 0) {
-                    const add: u32 = @intCast(-lines);
-                    self.scroll_top +|= add;
+                // Check if mouse is over sidebar for sidebar scrolling
+                const sidebar_region = layout.getRegion(.sidebar);
+                if (self.sidebar_visible and sidebar_region.contains(input.mouse_x, input.mouse_y)) {
+                    const scroll_lines: i16 = @intCast(@max(-10, @min(10, -@divTrunc(input.scroll_delta, 40))));
+                    self.sidebar.handleScroll(scroll_lines);
                 } else {
-                    const sub: u32 = @intCast(lines);
-                    if (self.scroll_top >= sub) {
-                        self.scroll_top -= sub;
+                    const lines: i32 = @divTrunc(input.scroll_delta, 40);
+                    if (lines < 0) {
+                        const add: u32 = @intCast(-lines);
+                        self.scroll_top +|= add;
                     } else {
-                        self.scroll_top = 0;
+                        const sub: u32 = @intCast(lines);
+                        if (self.scroll_top >= sub) {
+                            self.scroll_top -= sub;
+                        } else {
+                            self.scroll_top = 0;
+                        }
                     }
-                }
-                if (self.buffer.line_count > 0 and self.scroll_top >= self.buffer.line_count) {
-                    self.scroll_top = self.buffer.line_count - 1;
+                    if (self.buffer.line_count > 0 and self.scroll_top >= self.buffer.line_count) {
+                        self.scroll_top = self.buffer.line_count - 1;
+                    }
                 }
             }
         }
@@ -713,6 +797,11 @@ pub const Workbench = struct {
                 continue;
             }
 
+            // When sidebar search is active, route key events there
+            if (self.activity_bar.active_icon == 1 and self.sidebar_visible) {
+                if (self.handleSidebarSearchKey(ev.vk, ev.ctrl, ev.shift)) continue;
+            }
+
             // Try keybinding lookup
             if (self.keybindings.lookup(ev.vk, ev.ctrl, ev.shift, ev.alt)) |cmd_index| {
                 self.dispatchCommand(cmd_index);
@@ -753,7 +842,11 @@ pub const Workbench = struct {
 
         // Dispatch text input to active buffer when no overlay is visible
         if (!self.command_palette.visible and !self.find_visible and !self.file_picker.visible) {
-            self.handleTextInput(input);
+            if (self.activity_bar.active_icon == 1 and self.sidebar_visible) {
+                self.handleSidebarSearchTextInput(input);
+            } else {
+                self.handleTextInput(input);
+            }
         } else if (self.command_palette.visible) {
             self.handlePaletteTextInput(input);
         } else if (self.file_picker.visible) {
@@ -797,7 +890,7 @@ pub const Workbench = struct {
 
         // 3. Sidebar (delegated to sub-component)
         if (self.sidebar_visible) {
-            self.sidebar.render(layout.getRegion(.sidebar), font_atlas);
+            self.sidebar.render(layout.getRegion(.sidebar), font_atlas, self.activity_bar.active_icon);
         }
 
         // 4. Editor tabs
@@ -826,6 +919,7 @@ pub const Workbench = struct {
                 self.scroll_top,
                 visible_lines,
                 self.cursor_visible,
+                layout.window_h,
             );
         }
 
@@ -868,35 +962,19 @@ pub const Workbench = struct {
 
     fn handleCommandPaletteInput(self: *Workbench, vk: u16) void {
         switch (vk) {
-            VK_ESCAPE => self.command_palette.toggle(),
-            VK_UP => {
-                if (self.command_palette.selected_index > 0) {
-                    self.command_palette.selected_index -= 1;
-                }
-            },
-            VK_DOWN => {
-                if (self.command_palette.filtered_count > 0 and
-                    self.command_palette.selected_index < self.command_palette.filtered_count - 1)
-                {
-                    self.command_palette.selected_index += 1;
-                }
-            },
+            VK_ESCAPE => self.command_palette.close(),
+            VK_UP => self.command_palette.moveUp(),
+            VK_DOWN => self.command_palette.moveDown(),
             VK_RETURN => {
-                // Execute selected command via dispatchCommand
-                if (self.command_palette.getSelectedCommand()) |cmd| {
-                    const cmd_index = cmd.callback_index;
-                    self.command_palette.visible = false;
-                    self.dispatchCommand(cmd_index);
+                if (self.command_palette.getSelectedAction()) |act| {
+                    const cmd_id = act.id;
+                    self.command_palette.close();
+                    self.dispatchCommand(cmd_id);
                 } else {
-                    self.command_palette.visible = false;
+                    self.command_palette.close();
                 }
             },
-            VK_BACK => {
-                if (self.command_palette.input_len > 0) {
-                    self.command_palette.input_len -= 1;
-                    self.command_palette.updateFilter();
-                }
-            },
+            VK_BACK => self.command_palette.backspace(),
             else => {},
         }
     }
@@ -1015,13 +1093,7 @@ pub const Workbench = struct {
         while (i < input.text_input_len) : (i += 1) {
             const ch = input.text_input[i];
             if (ch < 0x20) continue; // skip control chars
-            if (self.command_palette.input_len < 256) {
-                self.command_palette.input_buf[self.command_palette.input_len] = ch;
-                self.command_palette.input_len += 1;
-            }
-        }
-        if (input.text_input_len > 0) {
-            self.command_palette.updateFilter();
+            self.command_palette.appendChar(ch);
         }
     }
 
@@ -1171,7 +1243,11 @@ pub const Workbench = struct {
 
     /// Handle all click regions (tabs, title bar buttons, activity bar, sidebar, panel, editor).
     fn handleAllClicks(self: *Workbench, input: *const InputState, layout: *LayoutState) void {
-        if (self.command_palette.visible) return;
+        // Command palette click handling (highest priority when open)
+        if (self.command_palette.visible) {
+            self.handleCommandPaletteClick(input.mouse_x, input.mouse_y, layout);
+            return;
+        }
 
         // File picker click handling (highest priority when open)
         if (self.file_picker.visible) {
@@ -1358,7 +1434,7 @@ pub const Workbench = struct {
                 .new_file => self.handleNewFile(),
                 .new_window => self.status_bar.setNotification("New Window"),
                 .open_file => self.showOpenFileDialog(),
-                .open_folder => self.status_bar.setNotification("Open Folder"),
+                .open_folder => self.showOpenFolderDialog(),
                 .open_recent => self.status_bar.setNotification("Open Recent"),
                 .save => self.saveCurrentFile(),
                 .save_as => self.showSaveAsDialog(),
@@ -1603,27 +1679,16 @@ pub const Workbench = struct {
 
     /// Handle activity bar icon clicks.
     fn handleActivityBarClick(self: *Workbench, my: i32, region: Rect) void {
-        const ICON_BTN_H: i32 = 48;
+        const icon_btn_h: i32 = self.cell_h * 3;
+        if (icon_btn_h <= 0) return;
         const rel_y = my - region.y;
-        const icon_idx: u8 = @intCast(@min(@as(u32, @intCast(@divTrunc(rel_y, ICON_BTN_H))), 4));
+        const icon_idx: u8 = @intCast(@min(@as(u32, @intCast(@divTrunc(rel_y, icon_btn_h))), 4));
         self.activity_bar.active_icon = icon_idx;
     }
 
     /// Handle sidebar file entry clicks.
     fn handleSidebarClick(self: *Workbench, my: i32, region: Rect) void {
-        // Section header + project header = 22 + 22 + 1 = 45px offset
-        const entries_y = region.y + 45;
-        const ROW_H: i32 = 22;
-        if (my < entries_y) return;
-        if (self.sidebar.entry_count == 0) return;
-        const rel_y = my - entries_y;
-        const entry_idx: u8 = @intCast(@min(@as(u32, @intCast(@divTrunc(rel_y, ROW_H))), self.sidebar.entry_count - 1));
-        if (entry_idx >= self.sidebar.entry_count) return;
-
-        // Toggle expand/collapse for directories
-        if (self.sidebar.is_dir[entry_idx]) {
-            self.sidebar.expanded[entry_idx] = !self.sidebar.expanded[entry_idx];
-        }
+        _ = self.sidebar.handleClick(my, region, self.cell_h);
     }
 
     /// Handle panel tab clicks.
@@ -2016,6 +2081,437 @@ pub const Workbench = struct {
         self.file_picker.open(.open);
     }
 
+    /// Open the GL-rendered file picker in folder selection mode.
+    fn showOpenFolderDialog(self: *Workbench) void {
+        self.file_picker.open(.folder);
+    }
+
+    // =========================================================================
+    // Sidebar search — input handling + execution
+    // =========================================================================
+
+    /// Handle key events when sidebar search view is active.
+    /// Returns true if the key was consumed.
+    fn handleSidebarSearchKey(self: *Workbench, vk: u16, ctrl: bool, shift: bool) bool {
+        _ = shift;
+        // Escape: clear search or switch back to explorer
+        if (vk == VK_ESCAPE) {
+            if (self.sidebar.search_query_len > 0) {
+                self.sidebar.clearSearch();
+            } else {
+                self.activity_bar.active_icon = 0;
+            }
+            return true;
+        }
+        // Tab: switch between search and replace fields
+        if (vk == VK_TAB) {
+            if (self.sidebar.search_active_field == .search) {
+                self.sidebar.search_active_field = .replace;
+            } else {
+                self.sidebar.search_active_field = .search;
+            }
+            return true;
+        }
+        // Backspace
+        if (vk == VK_BACK) {
+            if (self.sidebar.search_active_field == .search) {
+                self.sidebar.backspaceSearch();
+                self.executeSearch();
+            } else {
+                self.sidebar.backspaceReplace();
+            }
+            return true;
+        }
+        // Enter: jump to next match
+        if (vk == VK_RETURN) {
+            if (ctrl) {
+                // Ctrl+Enter: replace all (future)
+            } else {
+                self.jumpToSearchMatch();
+            }
+            return true;
+        }
+        // Up/Down: navigate match results
+        if (vk == VK_UP) {
+            if (self.sidebar.search_selected_row > 0) {
+                self.sidebar.search_selected_row -= 1;
+            }
+            return true;
+        }
+        if (vk == VK_DOWN) {
+            if (self.sidebar.search_match_count > 0) {
+                const max_row: i16 = @intCast(self.sidebar.search_match_count - 1);
+                if (self.sidebar.search_selected_row < max_row) {
+                    self.sidebar.search_selected_row += 1;
+                }
+            }
+            return true;
+        }
+        // Alt+R: toggle regex
+        if (vk == 0x52 and ctrl) { // Ctrl+R — not alt, to avoid conflict
+            self.sidebar.toggleRegex();
+            self.executeSearch();
+            return true;
+        }
+        // Alt+C: toggle case sensitive (use Ctrl+Shift+C to avoid conflicts)
+        if (vk == VK_C and ctrl) {
+            // Don't consume Ctrl+C (copy) — only toggle on Alt
+            return false;
+        }
+        return false;
+    }
+
+    /// Handle text input when sidebar search view is active.
+    fn handleSidebarSearchTextInput(self: *Workbench, input: *const InputState) void {
+        if (input.text_input_len == 0) return;
+        var i: u32 = 0;
+        while (i < input.text_input_len) : (i += 1) {
+            const ch = input.text_input[i];
+            if (ch < 0x20) continue; // skip control chars
+            if (self.sidebar.search_active_field == .search) {
+                self.sidebar.appendSearchChar(ch);
+            } else {
+                self.sidebar.appendReplaceChar(ch);
+            }
+        }
+        if (self.sidebar.search_active_field == .search) {
+            self.executeSearch();
+        }
+    }
+
+    /// Execute search: search the current buffer or project files.
+    fn executeSearch(self: *Workbench) void {
+        self.sidebar.search_match_count = 0;
+        self.sidebar.search_scroll_top = 0;
+        self.sidebar.search_selected_row = -1;
+
+        const query = self.sidebar.getSearchQuery();
+        if (query.len == 0) return;
+
+        if (self.project_root_len > 0 and self.sidebar.entry_count > 0) {
+            // Search across project files
+            self.searchProjectFiles(query);
+        } else if (self.buffer.content_len > 0) {
+            // Search current buffer only
+            self.searchCurrentBuffer(query, 0);
+        }
+    }
+
+    /// Search the current open buffer for all occurrences of query.
+    /// file_idx is the sidebar entry index to associate matches with.
+    fn searchCurrentBuffer(self: *Workbench, query: []const u8, file_idx: u8) void {
+        const case_sensitive = self.sidebar.search_case_sensitive;
+        var line_idx: u32 = 0;
+        while (line_idx < self.buffer.line_count) : (line_idx += 1) {
+            const line_text = self.buffer.getLine(line_idx) orelse continue;
+            if (line_text.len < query.len) {
+                line_idx += 0; // no-op, just continue
+                continue;
+            }
+            var col: u32 = 0;
+            while (col + query.len <= line_text.len) : (col += 1) {
+                const slice = line_text[col..][0..query.len];
+                if (matchQuery(slice, query, case_sensitive)) {
+                    // Check whole word if enabled
+                    if (self.sidebar.search_whole_word) {
+                        if (!isWholeWord(line_text, col, @intCast(query.len))) {
+                            continue;
+                        }
+                    }
+                    // Build context text (the line content, truncated)
+                    const text_start = if (col > 10) col - 10 else 0;
+                    const text_end = @min(line_text.len, text_start + sidebar_mod.MAX_MATCH_TEXT);
+                    const match_col_in_text: u16 = @intCast(col - text_start);
+                    self.sidebar.addMatch(
+                        file_idx,
+                        line_idx + 1,
+                        match_col_in_text,
+                        @intCast(query.len),
+                        line_text[text_start..text_end],
+                    );
+                    if (self.sidebar.search_match_count >= sidebar_mod.MAX_MATCHES) return;
+                    // Skip past this match to avoid overlapping
+                    col += @as(u32, @intCast(query.len)) - 1;
+                }
+            }
+        }
+    }
+
+    /// Search project files by reading each non-directory sidebar entry from disk.
+    fn searchProjectFiles(self: *Workbench, query: []const u8) void {
+        const case_sensitive = self.sidebar.search_case_sensitive;
+        var entry_i: u8 = 0;
+        while (entry_i < self.sidebar.entry_count) : (entry_i += 1) {
+            if (self.sidebar.is_dir[entry_i]) continue;
+            if (self.sidebar.search_match_count >= sidebar_mod.MAX_MATCHES) return;
+
+            // Build full path: project_root + \ + entry name
+            const name = self.sidebar.entries[entry_i][0..self.sidebar.entry_lens[entry_i]];
+
+            // Build UTF-16 path
+            var path_w: [1024]u16 = [_]u16{0} ** 1024;
+            var pi: usize = 0;
+            // Copy project root
+            var ri: u32 = 0;
+            while (ri < self.project_root_len and pi < 1020) : (ri += 1) {
+                path_w[pi] = self.project_root[ri];
+                pi += 1;
+            }
+            // Add backslash
+            if (pi < 1020) {
+                path_w[pi] = '\\';
+                pi += 1;
+            }
+            // Handle indented entries: walk up indent levels to build relative path
+            // For simplicity, just use the filename directly under project root
+            // (works for depth-0 files; nested files need parent path reconstruction)
+            var ni: usize = 0;
+            while (ni < name.len and pi < 1022) : (ni += 1) {
+                path_w[pi] = @intCast(name[ni]);
+                pi += 1;
+            }
+            path_w[pi] = 0;
+
+            // Read file content
+            var read_buf: [file_service.MAX_FILE_SIZE]u8 = undefined;
+            const result = file_service.readFile(@ptrCast(&path_w), &read_buf);
+            if (!result.success) continue;
+
+            const content = read_buf[0..result.bytes_read];
+
+            // Search line by line
+            var line_start: u32 = 0;
+            var line_num: u32 = 1;
+            var ci: u32 = 0;
+            while (ci <= result.bytes_read) : (ci += 1) {
+                const is_end = (ci == result.bytes_read);
+                const is_newline = if (!is_end) (content[ci] == '\n') else false;
+                if (is_newline or is_end) {
+                    const line_text = content[line_start..ci];
+                    if (line_text.len >= query.len) {
+                        var col: u32 = 0;
+                        while (col + query.len <= line_text.len) : (col += 1) {
+                            const slice = line_text[col..][0..query.len];
+                            if (matchQuery(slice, query, case_sensitive)) {
+                                if (self.sidebar.search_whole_word) {
+                                    if (!isWholeWord(line_text, col, @intCast(query.len))) {
+                                        continue;
+                                    }
+                                }
+                                const text_start = if (col > 10) col - 10 else 0;
+                                const text_end = @min(line_text.len, text_start + sidebar_mod.MAX_MATCH_TEXT);
+                                const match_col_in_text: u16 = @intCast(col - text_start);
+                                self.sidebar.addMatch(
+                                    entry_i,
+                                    line_num,
+                                    match_col_in_text,
+                                    @intCast(query.len),
+                                    line_text[text_start..text_end],
+                                );
+                                if (self.sidebar.search_match_count >= sidebar_mod.MAX_MATCHES) return;
+                                col += @as(u32, @intCast(query.len)) - 1;
+                            }
+                        }
+                    }
+                    line_start = ci + 1;
+                    line_num += 1;
+                }
+            }
+        }
+    }
+
+    /// Jump to the currently selected search match in the editor.
+    fn jumpToSearchMatch(self: *Workbench) void {
+        if (self.sidebar.search_selected_row < 0) {
+            // Select first match
+            if (self.sidebar.search_match_count > 0) {
+                self.sidebar.search_selected_row = 0;
+            } else return;
+        }
+        const sel_idx: u16 = @intCast(self.sidebar.search_selected_row);
+        if (sel_idx >= self.sidebar.search_match_count) return;
+        const m = self.sidebar.search_matches[sel_idx];
+        // Navigate to the match line
+        const target_line = if (m.line_num > 0) m.line_num - 1 else 0;
+        if (target_line < self.buffer.line_count) {
+            self.cursor_state.setPrimary(.{ .line = target_line, .col = m.col });
+            if (target_line < self.scroll_top or target_line >= self.scroll_top + 30) {
+                self.scroll_top = if (target_line > 10) target_line - 10 else 0;
+            }
+        }
+    }
+
+    /// Open a folder as the project root: store path, scan contents into sidebar.
+    fn openProjectFolder(self: *Workbench, path_w: [*:0]const u16) void {
+        // Store project root (UTF-16)
+        var len: u32 = 0;
+        while (len < MAX_FILE_PATH - 1 and path_w[len] != 0) : (len += 1) {}
+        @memcpy(self.project_root[0..len], path_w[0..len]);
+        self.project_root[len] = 0;
+        self.project_root_len = len;
+
+        // Convert to UTF-8 for display and sidebar header
+        var utf8_len: u8 = 0;
+        // Extract just the folder name (last path component)
+        var last_sep: u32 = 0;
+        var si: u32 = 0;
+        while (si < len) : (si += 1) {
+            if (path_w[si] == '\\' or path_w[si] == '/') last_sep = si + 1;
+        }
+        si = last_sep;
+        while (si < len and utf8_len < 255) : (si += 1) {
+            self.project_root_utf8[utf8_len] = if (path_w[si] < 128) @intCast(path_w[si]) else '?';
+            utf8_len += 1;
+        }
+        self.project_root_utf8_len = utf8_len;
+
+        // Scan folder contents into sidebar
+        self.scanFolderToSidebar(path_w, len, 0);
+
+        // Set sidebar project name from folder name
+        self.sidebar.setProjectName(self.project_root_utf8[0..self.project_root_utf8_len]);
+
+        // Show sidebar and switch to explorer view
+        self.sidebar_visible = true;
+        self.activity_bar.active_icon = 0;
+    }
+
+    /// Recursively scan a directory and populate the sidebar tree.
+    /// depth controls indentation level (0 = root).
+    fn scanFolderToSidebar(self: *Workbench, dir_path: [*:0]const u16, dir_len: u32, depth: u8) void {
+        if (depth == 0) self.sidebar.clearEntries();
+        if (depth > 3) return; // limit recursion depth
+
+        // Build search pattern: dir_path\*
+        var search_path: [file_picker_mod.MAX_PATH_LEN]u16 = [_]u16{0} ** file_picker_mod.MAX_PATH_LEN;
+        var sp: usize = 0;
+        var ci: usize = 0;
+        while (ci < dir_len) : (ci += 1) {
+            if (sp >= file_picker_mod.MAX_PATH_LEN - 3) break;
+            search_path[sp] = dir_path[ci];
+            sp += 1;
+        }
+        search_path[sp] = '\\';
+        sp += 1;
+        search_path[sp] = '*';
+        sp += 1;
+        search_path[sp] = 0;
+
+        var find_data: win32.WIN32_FIND_DATAW = undefined;
+        const handle = win32.FindFirstFileW(@ptrCast(&search_path), &find_data);
+        if (handle == null or @intFromPtr(handle.?) == win32.INVALID_HANDLE_VALUE) return;
+
+        // Collect entries: first pass for dirs, second for files
+        var dir_names: [64][260]u8 = undefined;
+        var dir_name_lens: [64]u8 = [_]u8{0} ** 64;
+        var dir_paths_w: [64][file_picker_mod.MAX_PATH_LEN]u16 = undefined;
+        var dir_path_lens: [64]u16 = [_]u16{0} ** 64;
+        var dir_count: u8 = 0;
+
+        var file_names: [128][64]u8 = undefined;
+        var file_name_lens: [128]u8 = [_]u8{0} ** 128;
+        var file_count: u8 = 0;
+
+        // Process first result
+        self.classifyFindResult(&find_data, dir_path, dir_len, &dir_names, &dir_name_lens, &dir_paths_w, &dir_path_lens, &dir_count, &file_names, &file_name_lens, &file_count);
+
+        while (win32.FindNextFileW(handle, &find_data) != 0) {
+            self.classifyFindResult(&find_data, dir_path, dir_len, &dir_names, &dir_name_lens, &dir_paths_w, &dir_path_lens, &dir_count, &file_names, &file_name_lens, &file_count);
+        }
+        _ = win32.FindClose(handle);
+
+        // Add directories first (sorted would be nice but insertion sort is fine for small N)
+        var di: u8 = 0;
+        while (di < dir_count) : (di += 1) {
+            const name = dir_names[di][0..dir_name_lens[di]];
+            self.sidebar.addTreeEntry(name, true, depth, depth == 0);
+
+            // Recurse into subdirectory (only at depth 0 for performance)
+            if (depth == 0) {
+                const sub_len = dir_path_lens[di];
+                dir_paths_w[di][sub_len] = 0; // null-terminate
+                self.scanFolderToSidebar(@ptrCast(&dir_paths_w[di]), sub_len, depth + 1);
+            }
+        }
+
+        // Add files
+        var fi: u8 = 0;
+        while (fi < file_count) : (fi += 1) {
+            const name = file_names[fi][0..file_name_lens[fi]];
+            self.sidebar.addTreeEntry(name, false, depth, false);
+        }
+    }
+
+    /// Classify a WIN32_FIND_DATAW result into dirs or files arrays.
+    fn classifyFindResult(
+        self: *Workbench,
+        fd: *const win32.WIN32_FIND_DATAW,
+        parent_path: [*:0]const u16,
+        parent_len: u32,
+        dir_names: *[64][260]u8,
+        dir_name_lens: *[64]u8,
+        dir_paths_w: *[64][file_picker_mod.MAX_PATH_LEN]u16,
+        dir_path_lens: *[64]u16,
+        dir_count: *u8,
+        file_names: *[128][64]u8,
+        file_name_lens: *[128]u8,
+        file_count: *u8,
+    ) void {
+        _ = self;
+        // Convert filename to UTF-8
+        var name_buf: [260]u8 = undefined;
+        var name_len: u8 = 0;
+        for (fd.cFileName) |wc| {
+            if (wc == 0) break;
+            if (name_len >= 255) break;
+            name_buf[name_len] = if (wc < 128) @intCast(wc) else '?';
+            name_len += 1;
+        }
+
+        // Skip "." and ".."
+        if (name_len == 1 and name_buf[0] == '.') return;
+        if (name_len == 2 and name_buf[0] == '.' and name_buf[1] == '.') return;
+        // Skip hidden files/dirs (starting with '.')
+        if (name_len > 0 and name_buf[0] == '.') return;
+
+        const is_dir = (fd.dwFileAttributes & win32.FILE_ATTRIBUTE_DIRECTORY) != 0;
+
+        if (is_dir) {
+            if (dir_count.* >= 64) return;
+            const idx = dir_count.*;
+            const copy_len = @min(name_len, 64);
+            @memcpy(dir_names[idx][0..copy_len], name_buf[0..copy_len]);
+            dir_name_lens[idx] = copy_len;
+
+            // Build full subdir path
+            var pos: u16 = 0;
+            var pi: u32 = 0;
+            while (pi < parent_len and pos < file_picker_mod.MAX_PATH_LEN - 2) : (pi += 1) {
+                dir_paths_w[idx][pos] = parent_path[pi];
+                pos += 1;
+            }
+            if (pos < file_picker_mod.MAX_PATH_LEN - 1) {
+                dir_paths_w[idx][pos] = '\\';
+                pos += 1;
+            }
+            for (fd.cFileName) |wc| {
+                if (wc == 0) break;
+                if (pos >= file_picker_mod.MAX_PATH_LEN - 1) break;
+                dir_paths_w[idx][pos] = wc;
+                pos += 1;
+            }
+            dir_path_lens[idx] = pos;
+            dir_count.* += 1;
+        } else {
+            if (file_count.* >= 128) return;
+            const idx = file_count.*;
+            const copy_len = @min(name_len, 64);
+            @memcpy(file_names[idx][0..copy_len], name_buf[0..copy_len]);
+            file_name_lens[idx] = copy_len;
+            file_count.* += 1;
+        }
+    }
+
     // =========================================================================
     // Rendering helpers
     // =========================================================================
@@ -2272,14 +2768,84 @@ pub const Workbench = struct {
         const close_x = region.x + region.w - WINDOW_BTN_WIDTH;
         const max_x = close_x - WINDOW_BTN_WIDTH;
         const min_x = max_x - WINDOW_BTN_WIDTH;
-        const sym_y = region.y + @divTrunc(region.h - font_atlas.cell_h, 2);
+        const btn_h = region.h;
 
-        font_atlas.renderText("_", @floatFromInt(min_x + @divTrunc(WINDOW_BTN_WIDTH - cell_w, 2)), @floatFromInt(sym_y), Color.rgb(0xCC, 0xCC, 0xCC));
+        // Hover backgrounds with smooth animation
+        // Minimize
+        if (self.wc_hover_anim[0] > 0.01) {
+            const a = self.wc_hover_anim[0];
+            renderAlphaRect(min_x, region.y, WINDOW_BTN_WIDTH, btn_h, Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = a * 0.1 });
+        }
+        // Maximize
+        if (self.wc_hover_anim[1] > 0.01) {
+            const a = self.wc_hover_anim[1];
+            renderAlphaRect(max_x, region.y, WINDOW_BTN_WIDTH, btn_h, Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = a * 0.1 });
+        }
+        // Close — red hover like VS Code
+        if (self.wc_hover_anim[2] > 0.01) {
+            const a = self.wc_hover_anim[2];
+            renderAlphaRect(close_x, region.y, WINDOW_BTN_WIDTH, btn_h, Color{ .r = 0.90, .g = 0.15, .b = 0.15, .a = a * 0.85 });
+        }
 
-        const max_sym_w = 2 * cell_w;
-        font_atlas.renderText("[]", @floatFromInt(max_x + @divTrunc(WINDOW_BTN_WIDTH - max_sym_w, 2)), @floatFromInt(sym_y), Color.rgb(0xCC, 0xCC, 0xCC));
+        // Icon colors (brighten on hover)
+        const min_alpha = 0.6 + self.wc_hover_anim[0] * 0.4;
+        const max_alpha = 0.6 + self.wc_hover_anim[1] * 0.4;
+        const close_alpha = 0.6 + self.wc_hover_anim[2] * 0.4;
+        const min_color = Color{ .r = 0.80, .g = 0.80, .b = 0.80, .a = min_alpha };
+        const max_color = Color{ .r = 0.80, .g = 0.80, .b = 0.80, .a = max_alpha };
+        const close_color = if (self.wc_hover_anim[2] > 0.3)
+            Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = close_alpha }
+        else
+            Color{ .r = 0.80, .g = 0.80, .b = 0.80, .a = close_alpha };
 
-        font_atlas.renderText("x", @floatFromInt(close_x + @divTrunc(WINDOW_BTN_WIDTH - cell_w, 2)), @floatFromInt(sym_y), Color.rgb(0xCC, 0xCC, 0xCC));
+        // Draw minimize icon: horizontal line (centered dash)
+        {
+            const icon_w: i32 = 10;
+            const ix = min_x + @divTrunc(WINDOW_BTN_WIDTH - icon_w, 2);
+            const iy = region.y + @divTrunc(btn_h, 2);
+            gl.glDisable(gl.GL_TEXTURE_2D);
+            gl.glColor4f(min_color.r, min_color.g, min_color.b, min_color.a);
+            gl.glLineWidth(1.0);
+            gl.glBegin(gl.GL_LINES);
+            gl.glVertex2f(@floatFromInt(ix), @floatFromInt(iy));
+            gl.glVertex2f(@floatFromInt(ix + icon_w), @floatFromInt(iy));
+            gl.glEnd();
+        }
+
+        // Draw maximize icon: square outline
+        {
+            const icon_sz: i32 = 10;
+            const ix = max_x + @divTrunc(WINDOW_BTN_WIDTH - icon_sz, 2);
+            const iy = region.y + @divTrunc(btn_h - icon_sz, 2);
+            gl.glDisable(gl.GL_TEXTURE_2D);
+            gl.glColor4f(max_color.r, max_color.g, max_color.b, max_color.a);
+            gl.glLineWidth(1.0);
+            gl.glBegin(gl.GL_LINE_LOOP);
+            gl.glVertex2f(@floatFromInt(ix), @floatFromInt(iy));
+            gl.glVertex2f(@floatFromInt(ix + icon_sz), @floatFromInt(iy));
+            gl.glVertex2f(@floatFromInt(ix + icon_sz), @floatFromInt(iy + icon_sz));
+            gl.glVertex2f(@floatFromInt(ix), @floatFromInt(iy + icon_sz));
+            gl.glEnd();
+        }
+
+        // Draw close icon: X shape (two diagonal lines)
+        {
+            const icon_sz: i32 = 10;
+            const ix = close_x + @divTrunc(WINDOW_BTN_WIDTH - icon_sz, 2);
+            const iy = region.y + @divTrunc(btn_h - icon_sz, 2);
+            gl.glDisable(gl.GL_TEXTURE_2D);
+            gl.glColor4f(close_color.r, close_color.g, close_color.b, close_color.a);
+            gl.glLineWidth(1.2);
+            gl.glBegin(gl.GL_LINES);
+            // Top-left to bottom-right
+            gl.glVertex2f(@floatFromInt(ix), @floatFromInt(iy));
+            gl.glVertex2f(@floatFromInt(ix + icon_sz), @floatFromInt(iy + icon_sz));
+            // Top-right to bottom-left
+            gl.glVertex2f(@floatFromInt(ix + icon_sz), @floatFromInt(iy));
+            gl.glVertex2f(@floatFromInt(ix), @floatFromInt(iy + icon_sz));
+            gl.glEnd();
+            gl.glLineWidth(1.0);
+        }
     }
 
     fn renderTabBar(self: *const Workbench, region: Rect, font_atlas: *const FontAtlas) void {
@@ -2443,60 +3009,350 @@ pub const Workbench = struct {
     }
 
     fn renderCommandPalette(self: *const Workbench, layout: *const LayoutState, font_atlas: *const FontAtlas) void {
-        // Center palette at top of editor area
-        const editor_tabs = layout.getRegion(.editor_tabs);
-        const palette_w: i32 = 500;
-        const palette_h: i32 = 300;
-        const palette_x = editor_tabs.x + @divTrunc(editor_tabs.w - palette_w, 2);
-        const palette_y = editor_tabs.y;
+        const CommandPaletteMod = @import("command_palette");
+        const t = self.command_palette.anim;
+        if (t <= 0.001) return;
 
-        const palette_rect = Rect{
-            .x = palette_x,
-            .y = palette_y,
-            .w = palette_w,
-            .h = palette_h,
-        };
+        // Ease-out cubic
+        const ease = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+        const alpha: f32 = ease;
 
-        // Background
-        renderRegionBackground(palette_rect, Color.rgb(0x25, 0x25, 0x25));
+        const win_w = layout.window_w;
+        const win_h = layout.window_h;
+        const line_h = font_atlas.cell_h;
+        const cw = font_atlas.cell_w;
 
-        // Input field
-        const input_text = self.command_palette.input_buf[0..self.command_palette.input_len];
-        if (input_text.len > 0) {
+        // ── Full-screen dimmed backdrop ──────────────────────────────
+        gl.glEnable(gl.GL_BLEND);
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+        gl.glDisable(gl.GL_TEXTURE_2D);
+        gl.glColor4f(0.0, 0.0, 0.0, 0.45 * alpha);
+        gl.glBegin(gl.GL_QUADS);
+        gl.glVertex2f(0, 0);
+        gl.glVertex2f(@floatFromInt(win_w), 0);
+        gl.glVertex2f(@floatFromInt(win_w), @floatFromInt(win_h));
+        gl.glVertex2f(0, @floatFromInt(win_h));
+        gl.glEnd();
+
+        // ── Panel dimensions ─────────────────────────────────────────
+        const max_vis: i32 = @intCast(CommandPaletteMod.CommandPalette.MAX_VISIBLE);
+        const row_h: i32 = line_h + 8;
+        const input_h: i32 = 38;
+        const list_h: i32 = max_vis * row_h;
+        const footer_h: i32 = 24;
+        const palette_w: i32 = @min(620, win_w - 60);
+        const palette_h: i32 = input_h + list_h + footer_h;
+        const palette_x: i32 = @divTrunc(win_w - palette_w, 2);
+
+        // Slide down from above
+        const final_y: f32 = @floatFromInt(layout.title_bar_height);
+        const slide_offset: f32 = -20.0 * (1.0 - ease);
+        const palette_y: i32 = @intFromFloat(final_y + slide_offset);
+
+        // ── Colors ───────────────────────────────────────────────────
+        const accent = Color{ .r = 0.0, .g = 0.48, .b = 0.80, .a = alpha };
+        const accent_glow = Color{ .r = 0.0, .g = 0.48, .b = 0.80, .a = alpha * 0.25 };
+        const panel_bg = Color{ .r = 0.145, .g = 0.145, .b = 0.145, .a = alpha * 0.98 };
+        const input_bg = Color{ .r = 0.19, .g = 0.19, .b = 0.19, .a = alpha };
+        const input_border = Color{ .r = 0.0, .g = 0.48, .b = 0.80, .a = alpha * 0.7 };
+        const text_primary = Color{ .r = 0.83, .g = 0.83, .b = 0.83, .a = alpha };
+        const text_dim = Color{ .r = 0.45, .g = 0.45, .b = 0.45, .a = alpha };
+        const text_shortcut = Color{ .r = 0.55, .g = 0.55, .b = 0.55, .a = alpha };
+        const text_category = Color{ .r = 0.40, .g = 0.70, .b = 1.0, .a = alpha };
+        const sel_bg = Color{ .r = 0.02, .g = 0.22, .b = 0.37, .a = alpha };
+        const hover_bg = Color{ .r = 0.15, .g = 0.15, .b = 0.20, .a = alpha * 0.5 };
+        const footer_bg = Color{ .r = 0.13, .g = 0.13, .b = 0.13, .a = alpha };
+        const shadow_color = Color{ .r = 0.0, .g = 0.0, .b = 0.0, .a = alpha * 0.5 };
+        const separator = Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = alpha * 0.05 };
+
+        // ── Drop shadow ──────────────────────────────────────────────
+        renderAlphaRect(palette_x - 4, palette_y + 4, palette_w + 8, palette_h + 4, shadow_color);
+        renderAlphaRect(palette_x - 2, palette_y + 2, palette_w + 4, palette_h + 2, Color{ .r = 0.0, .g = 0.0, .b = 0.0, .a = alpha * 0.3 });
+
+        // ── Main panel background ────────────────────────────────────
+        renderAlphaRect(palette_x, palette_y, palette_w, palette_h, panel_bg);
+
+        // ── Top accent line ──────────────────────────────────────────
+        renderAlphaRect(palette_x, palette_y, palette_w, 2, accent);
+        renderAlphaRect(palette_x, palette_y + 2, palette_w, 2, accent_glow);
+
+        // ── Search input field ───────────────────────────────────────
+        const inp_x = palette_x + 8;
+        const inp_y = palette_y + 6;
+        const inp_w = palette_w - 16;
+        const inp_inner_h: i32 = 28;
+
+        renderAlphaRect(inp_x, inp_y, inp_w, inp_inner_h, input_bg);
+        // Border
+        renderAlphaRect(inp_x, inp_y, inp_w, 1, input_border);
+        renderAlphaRect(inp_x, inp_y + inp_inner_h - 1, inp_w, 1, input_border);
+        renderAlphaRect(inp_x, inp_y, 1, inp_inner_h, input_border);
+        renderAlphaRect(inp_x + inp_w - 1, inp_y, 1, inp_inner_h, input_border);
+
+        // ">" prompt
+        font_atlas.renderText(
+            ">",
+            @floatFromInt(inp_x + 8),
+            @floatFromInt(inp_y + @divTrunc(inp_inner_h - line_h, 2)),
+            text_category,
+        );
+
+        // Input text or placeholder
+        const text_x = inp_x + 8 + cw + 6;
+        const text_y = inp_y + @divTrunc(inp_inner_h - line_h, 2);
+        if (self.command_palette.input_len > 0) {
             font_atlas.renderText(
-                input_text,
-                @floatFromInt(palette_x + 8),
-                @floatFromInt(palette_y + 8),
-                Color.rgb(0xD4, 0xD4, 0xD4),
+                self.command_palette.input_buf[0..self.command_palette.input_len],
+                @floatFromInt(text_x),
+                @floatFromInt(text_y),
+                text_primary,
+            );
+        } else {
+            font_atlas.renderText(
+                "Type a command...",
+                @floatFromInt(text_x),
+                @floatFromInt(text_y),
+                text_dim,
             );
         }
 
-        // Filtered results
-        const line_h = font_atlas.cell_h;
-        const results_y = palette_y + 30;
-        var r: usize = 0;
-        while (r < self.command_palette.filtered_count) : (r += 1) {
-            if (r >= 10) break; // show max 10 visible results
-            const cmd_idx = self.command_palette.filtered_indices[r];
-            const cmd = &self.command_palette.commands[cmd_idx];
-            const label = cmd.label[0..cmd.label_len];
+        // Blinking cursor
+        if (self.cursor_visible) {
+            const cur_x = text_x + @as(i32, @intCast(self.command_palette.input_len)) * cw;
+            renderAlphaRect(cur_x, inp_y + 5, 2, inp_inner_h - 10, text_category);
+        }
 
-            const item_y = results_y + @as(i32, @intCast(r)) * (line_h + 2);
+        // Separator below input
+        renderAlphaRect(palette_x + 8, inp_y + inp_inner_h + 3, palette_w - 16, 1, separator);
 
-            // Highlight selected item
-            if (r == self.command_palette.selected_index) {
-                renderRegionBackground(
-                    Rect{ .x = palette_x, .y = item_y, .w = palette_w, .h = line_h + 2 },
-                    Color.rgb(0x04, 0x39, 0x5E),
+        // ── Results list ─────────────────────────────────────────────
+        const list_y_start = inp_y + inp_inner_h + 5;
+        const scroll = self.command_palette.scroll_top;
+
+        // Scissor clip
+        gl.glEnable(gl.GL_SCISSOR_TEST);
+        const scissor_bottom = win_h - (list_y_start + list_h);
+        gl.glScissor(palette_x, scissor_bottom, palette_w, list_h);
+
+        var row: usize = 0;
+        while (row < @as(usize, @intCast(max_vis))) : (row += 1) {
+            const idx = scroll + row;
+            if (idx >= self.command_palette.filtered_count) break;
+
+            const act_idx = self.command_palette.filtered_indices[idx];
+            const act = &self.command_palette.actions[act_idx];
+            const label = act.label[0..act.label_len];
+            const shortcut = act.shortcut[0..act.shortcut_len];
+
+            const item_y = list_y_start + @as(i32, @intCast(row)) * row_h;
+
+            // Selection highlight
+            if (idx == self.command_palette.selected_index) {
+                renderAlphaRect(palette_x + 2, item_y, palette_w - 4, row_h, sel_bg);
+                // Left accent bar
+                renderAlphaRect(palette_x + 2, item_y + 2, 3, row_h - 4, accent);
+            } else if (self.command_palette.hover_row >= 0 and @as(usize, @intCast(self.command_palette.hover_row)) == row) {
+                renderAlphaRect(palette_x + 2, item_y, palette_w - 4, row_h, hover_bg);
+            }
+
+            // Category prefix (colored) — extract "Category:" part
+            var colon_pos: u8 = 0;
+            for (label, 0..) |ch, ci| {
+                if (ch == ':') {
+                    colon_pos = @intCast(ci + 1);
+                    break;
+                }
+            }
+
+            const label_x = palette_x + 14;
+            const label_y = item_y + @divTrunc(row_h - line_h, 2);
+
+            if (colon_pos > 0) {
+                // Render category prefix in accent color
+                font_atlas.renderText(
+                    label[0..colon_pos],
+                    @floatFromInt(label_x),
+                    @floatFromInt(label_y),
+                    text_category,
+                );
+                // Render rest of label in primary color
+                if (colon_pos < act.label_len) {
+                    font_atlas.renderText(
+                        label[colon_pos..act.label_len],
+                        @floatFromInt(label_x + @as(i32, @intCast(colon_pos)) * cw),
+                        @floatFromInt(label_y),
+                        text_primary,
+                    );
+                }
+            } else {
+                font_atlas.renderText(
+                    label,
+                    @floatFromInt(label_x),
+                    @floatFromInt(label_y),
+                    text_primary,
                 );
             }
 
-            font_atlas.renderText(
-                label,
-                @floatFromInt(palette_x + 8),
-                @floatFromInt(item_y + 1),
-                Color.rgb(0xD4, 0xD4, 0xD4),
-            );
+            // Keyboard shortcut (right-aligned)
+            if (shortcut.len > 0) {
+                const shortcut_w = @as(i32, @intCast(shortcut.len)) * cw;
+                const shortcut_x = palette_x + palette_w - shortcut_w - 14;
+                // Shortcut badge background
+                renderAlphaRect(shortcut_x - 4, item_y + @divTrunc(row_h - line_h, 2) - 1, shortcut_w + 8, line_h + 2, Color{ .r = 0.18, .g = 0.18, .b = 0.18, .a = alpha * 0.8 });
+                font_atlas.renderText(
+                    shortcut,
+                    @floatFromInt(shortcut_x),
+                    @floatFromInt(label_y),
+                    text_shortcut,
+                );
+            }
+
+            // Subtle separator between items
+            if (row + 1 < @as(usize, @intCast(max_vis)) and idx + 1 < self.command_palette.filtered_count) {
+                renderAlphaRect(palette_x + 12, item_y + row_h - 1, palette_w - 24, 1, separator);
+            }
+        }
+
+        gl.glDisable(gl.GL_SCISSOR_TEST);
+
+        // ── Scrollbar ────────────────────────────────────────────────
+        if (self.command_palette.filtered_count > CommandPaletteMod.CommandPalette.MAX_VISIBLE) {
+            const total: f32 = @floatFromInt(self.command_palette.filtered_count);
+            const vis_f: f32 = @floatFromInt(CommandPaletteMod.CommandPalette.MAX_VISIBLE);
+            const list_h_f: f32 = @floatFromInt(list_h);
+            const thumb_h: f32 = @max(20.0, (vis_f / total) * list_h_f);
+            const scroll_f: f32 = @floatFromInt(self.command_palette.scroll_top);
+            const max_scroll: f32 = total - vis_f;
+            const thumb_y: f32 = if (max_scroll > 0) (scroll_f / max_scroll) * (list_h_f - thumb_h) else 0;
+
+            // Track
+            renderAlphaRect(palette_x + palette_w - 8, list_y_start, 6, list_h, Color{ .r = 0.15, .g = 0.15, .b = 0.15, .a = alpha * 0.3 });
+            // Thumb
+            renderAlphaRect(palette_x + palette_w - 8, list_y_start + @as(i32, @intFromFloat(thumb_y)), 6, @intFromFloat(thumb_h), Color{ .r = 0.45, .g = 0.45, .b = 0.45, .a = alpha * 0.6 });
+        }
+
+        // ── Footer ───────────────────────────────────────────────────
+        const footer_y = list_y_start + list_h;
+        renderAlphaRect(palette_x, footer_y, palette_w, footer_h, footer_bg);
+        renderAlphaRect(palette_x + 8, footer_y, palette_w - 16, 1, separator);
+
+        // Result count
+        var count_buf: [32]u8 = undefined;
+        const filt_u16: u16 = @intCast(@min(self.command_palette.filtered_count, 0xFFFF));
+        const total_u16: u16 = @intCast(@min(self.command_palette.action_count, 0xFFFF));
+        const count_str = formatCount(filt_u16, total_u16, &count_buf);
+        font_atlas.renderText(
+            count_str,
+            @floatFromInt(palette_x + 12),
+            @floatFromInt(footer_y + @divTrunc(footer_h - line_h, 2)),
+            text_dim,
+        );
+
+        // Keyboard hints (right side)
+        const hints = "Enter:Run  Esc:Close";
+        const hints_w = @as(i32, @intCast(hints.len)) * cw;
+        font_atlas.renderText(
+            hints,
+            @floatFromInt(palette_x + palette_w - hints_w - 12),
+            @floatFromInt(footer_y + @divTrunc(footer_h - line_h, 2)),
+            text_dim,
+        );
+
+        // ── Bottom accent line ───────────────────────────────────────
+        renderAlphaRect(palette_x, footer_y + footer_h - 2, palette_w, 2, accent_glow);
+
+        // Reset GL state
+        gl.glColor4f(1, 1, 1, 1);
+    }
+
+    /// Handle mouse click on the command palette overlay.
+    fn handleCommandPaletteClick(self: *Workbench, mx: i32, my: i32, layout: *const LayoutState) void {
+        const CommandPaletteMod = @import("command_palette");
+        const win_w = layout.window_w;
+        const line_h = self.cell_h;
+
+        const row_h: i32 = line_h + 8;
+        const input_h: i32 = 38;
+        const max_vis: i32 = @intCast(CommandPaletteMod.CommandPalette.MAX_VISIBLE);
+        const list_h: i32 = max_vis * row_h;
+        const footer_h: i32 = 24;
+        const palette_w: i32 = @min(620, win_w - 60);
+        const palette_h: i32 = input_h + list_h + footer_h;
+        const palette_x: i32 = @divTrunc(win_w - palette_w, 2);
+
+        const ease = self.command_palette.anim;
+        const anim_t = 1.0 - (1.0 - ease) * (1.0 - ease) * (1.0 - ease);
+        const final_y: f32 = @floatFromInt(layout.title_bar_height);
+        const slide_offset: f32 = -20.0 * (1.0 - anim_t);
+        const palette_y: i32 = @intFromFloat(final_y + slide_offset);
+
+        const inside = mx >= palette_x and mx < palette_x + palette_w and
+            my >= palette_y and my < palette_y + palette_h;
+
+        if (!inside) {
+            self.command_palette.close();
+            return;
+        }
+
+        // Check if click is in the list area
+        const inp_inner_h: i32 = 28;
+        const list_y_start = palette_y + 6 + inp_inner_h + 5;
+
+        if (my >= list_y_start and my < list_y_start + list_h) {
+            const rel_y = my - list_y_start;
+            const clicked_row: usize = @intCast(@divTrunc(rel_y, row_h));
+            const clicked_idx = self.command_palette.scroll_top + clicked_row;
+
+            if (clicked_idx < self.command_palette.filtered_count) {
+                self.command_palette.selected_index = clicked_idx;
+                // Execute on click
+                if (self.command_palette.getSelectedAction()) |act| {
+                    const cmd_id = act.id;
+                    self.command_palette.close();
+                    self.dispatchCommand(cmd_id);
+                }
+            }
+        }
+    }
+
+    /// Update command palette hover row based on mouse position.
+    fn updateCommandPaletteHover(self: *Workbench, mx: i32, my: i32, layout: *const LayoutState) void {
+        const CommandPaletteMod = @import("command_palette");
+        const win_w = layout.window_w;
+        const line_h = self.cell_h;
+
+        const row_h: i32 = line_h + 8;
+        const input_h: i32 = 38;
+        const max_vis: i32 = @intCast(CommandPaletteMod.CommandPalette.MAX_VISIBLE);
+        const list_h: i32 = max_vis * row_h;
+        const footer_h: i32 = 24;
+        const palette_w: i32 = @min(620, win_w - 60);
+        const palette_h: i32 = input_h + list_h + footer_h;
+        _ = palette_h;
+        const palette_x: i32 = @divTrunc(win_w - palette_w, 2);
+
+        const ease = self.command_palette.anim;
+        const anim_t = 1.0 - (1.0 - ease) * (1.0 - ease) * (1.0 - ease);
+        const final_y: f32 = @floatFromInt(layout.title_bar_height);
+        const slide_offset: f32 = -20.0 * (1.0 - anim_t);
+        const palette_y: i32 = @intFromFloat(final_y + slide_offset);
+
+        const inp_inner_h: i32 = 28;
+        const list_y_start = palette_y + 6 + inp_inner_h + 5;
+
+        if (mx >= palette_x and mx < palette_x + palette_w and
+            my >= list_y_start and my < list_y_start + list_h)
+        {
+            const rel_y = my - list_y_start;
+            const hover_row: i16 = @intCast(@divTrunc(rel_y, row_h));
+            const hover_idx = @as(usize, @intCast(hover_row)) + self.command_palette.scroll_top;
+            if (hover_idx < self.command_palette.filtered_count) {
+                self.command_palette.hover_row = hover_row;
+            } else {
+                self.command_palette.hover_row = -1;
+            }
+        } else {
+            self.command_palette.hover_row = -1;
         }
     }
 
@@ -3329,16 +4185,41 @@ pub const Workbench = struct {
                 }
             },
             VK_RETURN => {
-                const entry = self.file_picker.getSelected() orelse return;
+                const entry = self.file_picker.getSelected() orelse {
+                    // No selection — in folder mode, select current directory
+                    if (self.file_picker.mode == .folder) {
+                        self.openProjectFolder(self.file_picker.getCurrentDirW());
+                        self.file_picker.close();
+                    }
+                    return;
+                };
                 if (entry.is_dir) {
-                    // Navigate into directory (or go up for "..")
-                    const name = entry.name[0..entry.name_len];
-                    if (entry.name_len == 2 and entry.name[0] == '.' and entry.name[1] == '.') {
-                        self.file_picker.goUp();
+                    if (self.file_picker.mode == .folder) {
+                        // Folder mode: Enter on a dir opens it as project
+                        // (except ".." which navigates up)
+                        if (entry.name_len == 2 and entry.name[0] == '.' and entry.name[1] == '.') {
+                            self.file_picker.goUp();
+                        } else {
+                            // Build full path and open as project
+                            var path_buf: [file_picker_mod.MAX_PATH_LEN]u16 = undefined;
+                            const path_len = self.file_picker.getSelectedPath(&path_buf);
+                            if (path_len > 0) {
+                                path_buf[path_len] = 0;
+                                self.openProjectFolder(@ptrCast(&path_buf));
+                                self.file_picker.close();
+                            }
+                        }
                     } else {
-                        self.file_picker.enterDirectory(name);
+                        // Open/Save mode: navigate into directory
+                        const name = entry.name[0..entry.name_len];
+                        if (entry.name_len == 2 and entry.name[0] == '.' and entry.name[1] == '.') {
+                            self.file_picker.goUp();
+                        } else {
+                            self.file_picker.enterDirectory(name);
+                        }
                     }
                 } else {
+                    if (self.file_picker.mode == .folder) return; // ignore files in folder mode
                     // Open or save the selected file
                     var path_buf: [file_picker_mod.MAX_PATH_LEN]u16 = undefined;
                     const path_len = self.file_picker.getSelectedPath(&path_buf);
@@ -3441,8 +4322,24 @@ pub const Workbench = struct {
                 self.file_picker_last_click_idx = clicked_idx;
 
                 if (is_double) {
-                    // Double-click: open file or enter directory
-                    self.handleFilePickerInput(VK_RETURN);
+                    // Double-click behavior
+                    const dbl_entry = self.file_picker.getSelected();
+                    if (self.file_picker.mode == .folder) {
+                        // Folder mode: double-click navigates into dirs
+                        if (dbl_entry) |e| {
+                            if (e.is_dir) {
+                                const name = e.name[0..e.name_len];
+                                if (e.name_len == 2 and e.name[0] == '.' and e.name[1] == '.') {
+                                    self.file_picker.goUp();
+                                } else {
+                                    self.file_picker.enterDirectory(name);
+                                }
+                            }
+                        }
+                    } else {
+                        // Open/Save mode: Enter behavior
+                        self.handleFilePickerInput(VK_RETURN);
+                    }
                     self.file_picker_last_click_idx = 0xFFFF; // reset to prevent triple-click
                 }
             }
@@ -3580,7 +4477,11 @@ pub const Workbench = struct {
         renderAlphaRect(picker_x + 14, icon_y + 2, icon_size - 4, icon_size - 4, Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = alpha * 0.15 });
 
         // Mode label
-        const mode_label: []const u8 = if (self.file_picker.mode == .save) "Save As" else "Open File";
+        const mode_label: []const u8 = switch (self.file_picker.mode) {
+            .save => "Save As",
+            .folder => "Open Folder",
+            .open => "Open File",
+        };
         font_atlas.renderText(
             mode_label,
             @floatFromInt(picker_x + 32),
@@ -3773,7 +4674,10 @@ pub const Workbench = struct {
         font_atlas.renderText(count_str, @floatFromInt(picker_x + 12), @floatFromInt(ftr_y + @divTrunc(footer_h - line_h, 2)), text_dim);
 
         // Keyboard hints (right side)
-        const hints = "Enter:Open  Esc:Close  Bksp:Up";
+        const hints: []const u8 = if (self.file_picker.mode == .folder)
+            "Enter:Select  DblClick:Browse  Esc:Close"
+        else
+            "Enter:Open  Esc:Close  Bksp:Up";
         const hints_x = picker_x + picker_w - @as(i32, @intCast(hints.len)) * cw - 12;
         font_atlas.renderText(hints, @floatFromInt(hints_x), @floatFromInt(ftr_y + @divTrunc(footer_h - line_h, 2)), text_dim);
 
@@ -3784,7 +4688,8 @@ pub const Workbench = struct {
         renderAlphaRect(picker_x, picker_y, 1, picker_h, Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = alpha * 0.08 });
         renderAlphaRect(picker_x + picker_w - 1, picker_y, 1, picker_h, Color{ .r = 0.0, .g = 0.0, .b = 0.0, .a = alpha * 0.3 });
 
-        gl.glDisable(gl.GL_BLEND);
+        // Restore GL state (GL_BLEND stays enabled globally for font rendering)
+        gl.glColor4f(1.0, 1.0, 1.0, 1.0);
     }
 };
 
@@ -3851,6 +4756,37 @@ fn strEql(a: []const u8, b: []const u8) bool {
     return true;
 }
 
+/// Compare two slices with optional case-insensitive matching.
+fn matchQuery(text: []const u8, query: []const u8, case_sensitive: bool) bool {
+    if (text.len != query.len) return false;
+    if (case_sensitive) return strEql(text, query);
+    for (text, query) |a, b| {
+        if (toLower(a) != toLower(b)) return false;
+    }
+    return true;
+}
+
+/// ASCII lowercase.
+fn toLower(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c + 32 else c;
+}
+
+/// Check if a match at (col, len) in line_text is a whole word.
+fn isWholeWord(line_text: []const u8, col: u32, len: u32) bool {
+    // Check character before match
+    if (col > 0) {
+        const before = line_text[col - 1];
+        if (isWordChar(before)) return false;
+    }
+    // Check character after match
+    const after_idx = col + len;
+    if (after_idx < line_text.len) {
+        const after = line_text[after_idx];
+        if (isWordChar(after)) return false;
+    }
+    return true;
+}
+
 /// Draw a filled rectangle with the given color using GL immediate mode.
 fn renderRegionBackground(region: Rect, color: Color) void {
     gl.glDisable(gl.GL_TEXTURE_2D);
@@ -3870,210 +4806,17 @@ fn renderRegionBackground(region: Rect, color: Color) void {
 }
 
 // =============================================================================
-// File picker rendering helpers
+// File picker rendering helpers — delegated to shared file_tree module
 // =============================================================================
 
-/// Draw a filled rectangle with alpha blending (assumes GL_BLEND is already enabled).
-fn renderAlphaRect(x: i32, y: i32, w: i32, h: i32, color: Color) void {
-    gl.glDisable(gl.GL_TEXTURE_2D);
-    gl.glColor4f(color.r, color.g, color.b, color.a);
-    const x0: f32 = @floatFromInt(x);
-    const y0: f32 = @floatFromInt(y);
-    const x1: f32 = @floatFromInt(x + w);
-    const y1: f32 = @floatFromInt(y + h);
-    gl.glBegin(gl.GL_QUADS);
-    gl.glVertex2f(x0, y0);
-    gl.glVertex2f(x1, y0);
-    gl.glVertex2f(x1, y1);
-    gl.glVertex2f(x0, y1);
-    gl.glEnd();
-}
-
-/// Render a magnifying glass search icon using GL lines.
-fn renderSearchIcon(cx: f32, cy: f32, radius: f32, color: Color) void {
-    gl.glDisable(gl.GL_TEXTURE_2D);
-    gl.glColor4f(color.r, color.g, color.b, color.a);
-    gl.glLineWidth(1.5);
-    // Circle (approximated with 12 segments)
-    gl.glBegin(gl.GL_LINE_LOOP);
-    comptime var i: usize = 0;
-    inline while (i < 12) : (i += 1) {
-        const angle: f32 = @as(f32, @floatFromInt(i)) * (2.0 * 3.14159 / 12.0);
-        gl.glVertex2f(cx + radius * @cos(angle), cy + radius * @sin(angle));
-    }
-    gl.glEnd();
-    // Handle (line from bottom-right of circle outward)
-    const hx = cx + radius * 0.707;
-    const hy = cy + radius * 0.707;
-    gl.glBegin(gl.GL_LINES);
-    gl.glVertex2f(hx, hy);
-    gl.glVertex2f(hx + radius * 0.6, hy + radius * 0.6);
-    gl.glEnd();
-    gl.glLineWidth(1.0);
-}
-
-/// Render a folder icon (rectangle with a tab on top-left).
-fn renderFolderIcon(x: i32, y: i32, size: i32, color: Color) void {
-    gl.glDisable(gl.GL_TEXTURE_2D);
-    const s: f32 = @floatFromInt(size);
-    const fx: f32 = @floatFromInt(x);
-    const fy: f32 = @floatFromInt(y);
-    const tab_w = s * 0.4;
-    const tab_h = s * 0.2;
-
-    // Tab (top-left flap)
-    gl.glColor4f(color.r * 0.85, color.g * 0.85, color.b * 0.85, color.a);
-    gl.glBegin(gl.GL_QUADS);
-    gl.glVertex2f(fx, fy);
-    gl.glVertex2f(fx + tab_w, fy);
-    gl.glVertex2f(fx + tab_w + tab_h * 0.5, fy + tab_h);
-    gl.glVertex2f(fx, fy + tab_h);
-    gl.glEnd();
-
-    // Main body
-    gl.glColor4f(color.r, color.g, color.b, color.a);
-    gl.glBegin(gl.GL_QUADS);
-    gl.glVertex2f(fx, fy + tab_h);
-    gl.glVertex2f(fx + s * 0.9, fy + tab_h);
-    gl.glVertex2f(fx + s * 0.9, fy + s);
-    gl.glVertex2f(fx, fy + s);
-    gl.glEnd();
-
-    // Highlight stripe (top of body)
-    gl.glColor4f(1.0, 1.0, 1.0, color.a * 0.12);
-    gl.glBegin(gl.GL_QUADS);
-    gl.glVertex2f(fx, fy + tab_h);
-    gl.glVertex2f(fx + s * 0.9, fy + tab_h);
-    gl.glVertex2f(fx + s * 0.9, fy + tab_h + 1.0);
-    gl.glVertex2f(fx, fy + tab_h + 1.0);
-    gl.glEnd();
-}
-
-/// Render a file icon (rectangle with folded corner).
-fn renderFileIcon(x: i32, y: i32, size: i32, color: Color) void {
-    gl.glDisable(gl.GL_TEXTURE_2D);
-    const s: f32 = @floatFromInt(size);
-    const fx: f32 = @floatFromInt(x);
-    const fy: f32 = @floatFromInt(y);
-    const fold = s * 0.25;
-    const w = s * 0.7;
-
-    // Main body (with corner cut)
-    gl.glColor4f(color.r, color.g, color.b, color.a);
-    gl.glBegin(gl.GL_QUADS);
-    gl.glVertex2f(fx, fy);
-    gl.glVertex2f(fx + w - fold, fy);
-    gl.glVertex2f(fx + w - fold, fy + s);
-    gl.glVertex2f(fx, fy + s);
-    gl.glEnd();
-    // Right column below fold
-    gl.glBegin(gl.GL_QUADS);
-    gl.glVertex2f(fx + w - fold, fy + fold);
-    gl.glVertex2f(fx + w, fy + fold);
-    gl.glVertex2f(fx + w, fy + s);
-    gl.glVertex2f(fx + w - fold, fy + s);
-    gl.glEnd();
-    // Fold triangle
-    gl.glColor4f(color.r * 0.7, color.g * 0.7, color.b * 0.7, color.a);
-    gl.glBegin(gl.GL_TRIANGLES);
-    gl.glVertex2f(fx + w - fold, fy);
-    gl.glVertex2f(fx + w, fy + fold);
-    gl.glVertex2f(fx + w - fold, fy + fold);
-    gl.glEnd();
-}
-
-/// Render an upward-pointing arrow (for ".." parent directory).
-fn renderArrowUp(cx: f32, cy: f32, size: f32, color: Color) void {
-    gl.glDisable(gl.GL_TEXTURE_2D);
-    gl.glColor4f(color.r, color.g, color.b, color.a);
-    gl.glBegin(gl.GL_TRIANGLES);
-    gl.glVertex2f(cx, cy - size);
-    gl.glVertex2f(cx - size * 0.7, cy + size * 0.3);
-    gl.glVertex2f(cx + size * 0.7, cy + size * 0.3);
-    gl.glEnd();
-    // Stem
-    gl.glBegin(gl.GL_QUADS);
-    gl.glVertex2f(cx - size * 0.2, cy + size * 0.3);
-    gl.glVertex2f(cx + size * 0.2, cy + size * 0.3);
-    gl.glVertex2f(cx + size * 0.2, cy + size);
-    gl.glVertex2f(cx - size * 0.2, cy + size);
-    gl.glEnd();
-}
-
-/// Get the file extension from a filename (e.g., "main.zig" → ".zig").
-fn fileExtension(name: []const u8) []const u8 {
-    var i: usize = name.len;
-    while (i > 0) {
-        i -= 1;
-        if (name[i] == '.') return name[i..];
-    }
-    return "";
-}
-
-/// Color-code a filename by extension for visual variety.
-fn fileNameColor(name: []const u8, alpha: f32, selected: bool) Color {
-    if (selected) return Color{ .r = 0.95, .g = 0.95, .b = 0.95, .a = alpha };
-    const ext = fileExtension(name);
-    if (ext.len == 0) return Color{ .r = 0.83, .g = 0.83, .b = 0.83, .a = alpha };
-    // Zig files — orange
-    if (strEql(ext, ".zig")) return Color{ .r = 0.95, .g = 0.65, .b = 0.25, .a = alpha };
-    // Config/build files
-    if (strEql(ext, ".json") or strEql(ext, ".toml") or strEql(ext, ".yml") or strEql(ext, ".yaml"))
-        return Color{ .r = 0.60, .g = 0.85, .b = 0.45, .a = alpha };
-    // Markdown / text
-    if (strEql(ext, ".md") or strEql(ext, ".txt") or strEql(ext, ".rst"))
-        return Color{ .r = 0.55, .g = 0.75, .b = 0.95, .a = alpha };
-    // Scripts
-    if (strEql(ext, ".py") or strEql(ext, ".sh") or strEql(ext, ".bat") or strEql(ext, ".ps1"))
-        return Color{ .r = 0.70, .g = 0.55, .b = 0.90, .a = alpha };
-    // Images / resources
-    if (strEql(ext, ".ico") or strEql(ext, ".png") or strEql(ext, ".bmp") or strEql(ext, ".svg"))
-        return Color{ .r = 0.90, .g = 0.55, .b = 0.70, .a = alpha };
-    // C/C++ headers/sources
-    if (strEql(ext, ".c") or strEql(ext, ".h") or strEql(ext, ".cpp") or strEql(ext, ".hpp"))
-        return Color{ .r = 0.45, .g = 0.70, .b = 0.95, .a = alpha };
-    return Color{ .r = 0.83, .g = 0.83, .b = 0.83, .a = alpha };
-}
-
-/// Format "N of M items" into a fixed buffer. Returns the slice.
-fn formatCount(filtered: u16, total: u16, buf: *[32]u8) []const u8 {
-    var pos: usize = 0;
-    // Write filtered count
-    pos = writeU16(buf, pos, filtered);
-    const of_str = " of ";
-    @memcpy(buf[pos..][0..of_str.len], of_str);
-    pos += of_str.len;
-    // Write total count
-    pos = writeU16(buf, pos, total);
-    const items_str = " items";
-    @memcpy(buf[pos..][0..items_str.len], items_str);
-    pos += items_str.len;
-    return buf[0..pos];
-}
-
-/// Write a u16 as decimal digits into buf at pos. Returns new pos.
-fn writeU16(buf: *[32]u8, start: usize, val: u16) usize {
-    if (val == 0) {
-        buf[start] = '0';
-        return start + 1;
-    }
-    var digits: [5]u8 = undefined;
-    var dcount: usize = 0;
-    var v = val;
-    while (v > 0) {
-        digits[dcount] = @intCast(v % 10 + '0');
-        dcount += 1;
-        v /= 10;
-    }
-    var pos = start;
-    var i: usize = dcount;
-    while (i > 0) {
-        i -= 1;
-        buf[pos] = digits[i];
-        pos += 1;
-    }
-    return pos;
-}
+const renderAlphaRect = ft.renderAlphaRect;
+const renderSearchIcon = ft.renderSearchIcon;
+const renderFolderIcon = ft.renderFolderIcon;
+const renderFileIcon = ft.renderFileIcon;
+const renderArrowUp = ft.renderArrowUp;
+const fileExtension = ft.fileExtension;
+const fileNameColor = ft.fileNameColor;
+const formatCount = ft.formatCount;
 
 // =============================================================================
 // Tests
@@ -4429,24 +5172,21 @@ test "registerDefaultCommands populates command palette" {
     var wb = Workbench{};
     wb.registerDefaultCommands();
 
-    try testing.expectEqual(@as(usize, 4), wb.command_palette.command_count);
+    // Should have 100+ actions registered (all system commands)
+    try testing.expect(wb.command_palette.action_count > 80);
 
-    // Verify each command is registered with correct id and label
-    const cmd0 = wb.command_palette.commands[0];
-    try testing.expectEqual(@as(u16, CMD_OPEN_FILE), cmd0.id);
-    try testing.expect(mem.eql(u8, "Open File", cmd0.label[0..cmd0.label_len]));
-
-    const cmd1 = wb.command_palette.commands[1];
-    try testing.expectEqual(@as(u16, CMD_SAVE_FILE), cmd1.id);
-    try testing.expect(mem.eql(u8, "Save File", cmd1.label[0..cmd1.label_len]));
-
-    const cmd2 = wb.command_palette.commands[2];
-    try testing.expectEqual(@as(u16, CMD_TOGGLE_SIDEBAR), cmd2.id);
-    try testing.expect(mem.eql(u8, "Toggle Sidebar", cmd2.label[0..cmd2.label_len]));
-
-    const cmd3 = wb.command_palette.commands[3];
-    try testing.expectEqual(@as(u16, CMD_TOGGLE_PANEL), cmd3.id);
-    try testing.expect(mem.eql(u8, "Toggle Panel", cmd3.label[0..cmd3.label_len]));
+    // Verify some known actions exist by searching
+    var found_save = false;
+    var found_undo = false;
+    var found_toggle_sidebar = false;
+    for (0..wb.command_palette.action_count) |i| {
+        if (wb.command_palette.actions[i].id == 610) found_save = true; // File: Save
+        if (wb.command_palette.actions[i].id == 700) found_undo = true; // Edit: Undo
+        if (wb.command_palette.actions[i].id == 2) found_toggle_sidebar = true; // View: Toggle Sidebar
+    }
+    try testing.expect(found_save);
+    try testing.expect(found_undo);
+    try testing.expect(found_toggle_sidebar);
 }
 
 test "dispatchCommand CMD_TOGGLE_SIDEBAR toggles sidebar_visible" {
@@ -4478,12 +5218,17 @@ test "command palette Enter executes selected command" {
     // Open command palette and update filter to show all commands
     wb.command_palette.toggle();
     try testing.expectEqual(true, wb.command_palette.visible);
-    try testing.expectEqual(@as(usize, 4), wb.command_palette.filtered_count);
+    try testing.expect(wb.command_palette.filtered_count > 0);
 
-    // Select "Toggle Sidebar" (index 2 in unfiltered list)
-    wb.command_palette.selected_index = 2;
+    // Filter for "Toggle Sidebar" to find it
+    const query = "Toggle Sidebar";
+    @memcpy(wb.command_palette.input_buf[0..query.len], query);
+    wb.command_palette.input_len = query.len;
+    wb.command_palette.updateFilter();
+    try testing.expect(wb.command_palette.filtered_count >= 1);
 
-    // Press Enter
+    // Select first result and press Enter
+    wb.command_palette.selected_index = 0;
     wb.handleCommandPaletteInput(VK_RETURN);
 
     // Command palette should be closed
@@ -4520,13 +5265,13 @@ test "command palette filter then Enter executes filtered command" {
     // Open palette
     wb.command_palette.toggle();
 
-    // Type "panel" to filter
-    const query = "panel";
+    // Type "Toggle Panel" to filter
+    const query = "Toggle Panel";
     @memcpy(wb.command_palette.input_buf[0..query.len], query);
     wb.command_palette.input_len = query.len;
     wb.command_palette.updateFilter();
 
-    // Should match "Toggle Panel"
+    // Should match "View: Toggle Panel"
     try testing.expect(wb.command_palette.filtered_count >= 1);
 
     // Select first result and press Enter
