@@ -128,8 +128,8 @@ fn runFuzzyMatchOnlyProperty(rng: *Lcg) !void {
     // Every filtered result must be a fuzzy match of the query
     for (0..cp.filtered_count) |i| {
         const cmd_idx = cp.filtered_indices[i];
-        const cmd = &cp.commands[cmd_idx];
-        const label = cmd.label[0..cmd.label_len];
+        const act = &cp.actions[cmd_idx];
+        const label = act.label[0..act.label_len];
         const score = fuzzyScore(query, label);
         try expect(score >= 0);
     }
@@ -137,7 +137,7 @@ fn runFuzzyMatchOnlyProperty(rng: *Lcg) !void {
     // Every command NOT in filtered results must NOT be a fuzzy match,
     // OR we hit MAX_RESULTS cap
     if (cp.filtered_count < CommandPalette.MAX_RESULTS) {
-        for (0..cp.command_count) |ci| {
+        for (0..cp.action_count) |ci| {
             var found = false;
             for (0..cp.filtered_count) |fi| {
                 if (cp.filtered_indices[fi] == ci) {
@@ -146,8 +146,8 @@ fn runFuzzyMatchOnlyProperty(rng: *Lcg) !void {
                 }
             }
             if (!found) {
-                const cmd = &cp.commands[ci];
-                const label = cmd.label[0..cmd.label_len];
+                const act = &cp.actions[ci];
+                const label = act.label[0..act.label_len];
                 const score = fuzzyScore(query, label);
                 try expect(score < 0);
             }
