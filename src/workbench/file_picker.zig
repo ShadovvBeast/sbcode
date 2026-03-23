@@ -65,7 +65,7 @@ pub const FilePicker = struct {
     selected: u16 = 0,
     scroll_top: u16 = 0,
 
-    pub const Mode = enum { open, save };
+    pub const Mode = enum { open, save, folder };
 
     /// Open the file picker. Reads the current working directory and lists its contents.
     pub fn open(self: *FilePicker, mode: Mode) void {
@@ -327,6 +327,12 @@ pub const FilePicker = struct {
             len += 1;
         }
         return len;
+    }
+
+    /// Get the current directory as a null-terminated UTF-16 path.
+    pub fn getCurrentDirW(self: *FilePicker) [*:0]const u16 {
+        self.current_dir[self.current_dir_len] = 0;
+        return @ptrCast(&self.current_dir);
     }
 };
 
