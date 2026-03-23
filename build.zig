@@ -338,6 +338,15 @@ pub fn build(b: *std.Build) void {
             .{ .name = "color", .module = color_mod },
         },
     });
+    const file_icons_mod = b.createModule(.{
+        .root_source_file = b.path("src/workbench/file_icons.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "gl", .module = gl_mod },
+            .{ .name = "win32", .module = win32_mod },
+        },
+    });
     const sidebar_mod = b.createModule(.{
         .root_source_file = b.path("src/workbench/sidebar.zig"),
         .target = target,
@@ -348,6 +357,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "color", .module = color_mod },
             .{ .name = "rect", .module = rect_mod },
             .{ .name = "file_tree", .module = file_tree_mod },
+            .{ .name = "file_icons", .module = file_icons_mod },
         },
     });
     const panel_mod = b.createModule(.{
@@ -409,6 +419,432 @@ pub fn build(b: *std.Build) void {
             .{ .name = "syntax", .module = syntax_mod },
         },
     });
+    const ext_markdown_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/markdown_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_typescript_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/typescript_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_javascript_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/javascript_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_python_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/python_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_c_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/c_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_cpp_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/cpp_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_rust_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/rust_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_go_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/go_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_html_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/html_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_css_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/css_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    // -- HIGH priority language extensions --
+    const ext_java_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/java_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_csharp_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/csharp_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_php_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/php_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_ruby_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/ruby_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_shell_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/shell_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_sql_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/sql_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_xml_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/xml_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_yaml_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/yaml_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    // -- MEDIUM priority language extensions --
+    const ext_bat_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/bat_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_dart_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/dart_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_diff_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/diff_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_docker_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/docker_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_ini_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/ini_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_less_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/less_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_lua_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/lua_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_make_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/make_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_perl_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/perl_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_powershell_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/powershell_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_r_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/r_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_scss_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/scss_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_swift_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/swift_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    // -- LOW priority language extensions --
+    const ext_clojure_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/clojure_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_coffeescript_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/coffeescript_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_dotenv_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/dotenv_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_fsharp_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/fsharp_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_groovy_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/groovy_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_handlebars_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/handlebars_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_hlsl_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/hlsl_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_julia_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/julia_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_latex_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/latex_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_log_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/log_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_objc_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/objc_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_pug_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/pug_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_razor_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/razor_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_rst_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/rst_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_shaderlab_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/shaderlab_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_vb_lang_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/vb_lang.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
     const manifest_mod = b.createModule(.{
         .root_source_file = b.path("src/extension/manifest.zig"),
         .target = target,
@@ -417,6 +853,53 @@ pub fn build(b: *std.Build) void {
             .{ .name = "extension", .module = extension_mod },
             .{ .name = "ext_zig_lang", .module = ext_zig_lang_mod },
             .{ .name = "ext_json_lang", .module = ext_json_lang_mod },
+            .{ .name = "ext_markdown_lang", .module = ext_markdown_lang_mod },
+            .{ .name = "ext_typescript_lang", .module = ext_typescript_lang_mod },
+            .{ .name = "ext_javascript_lang", .module = ext_javascript_lang_mod },
+            .{ .name = "ext_python_lang", .module = ext_python_lang_mod },
+            .{ .name = "ext_c_lang", .module = ext_c_lang_mod },
+            .{ .name = "ext_cpp_lang", .module = ext_cpp_lang_mod },
+            .{ .name = "ext_rust_lang", .module = ext_rust_lang_mod },
+            .{ .name = "ext_go_lang", .module = ext_go_lang_mod },
+            .{ .name = "ext_html_lang", .module = ext_html_lang_mod },
+            .{ .name = "ext_css_lang", .module = ext_css_lang_mod },
+            .{ .name = "ext_java_lang", .module = ext_java_lang_mod },
+            .{ .name = "ext_csharp_lang", .module = ext_csharp_lang_mod },
+            .{ .name = "ext_php_lang", .module = ext_php_lang_mod },
+            .{ .name = "ext_ruby_lang", .module = ext_ruby_lang_mod },
+            .{ .name = "ext_shell_lang", .module = ext_shell_lang_mod },
+            .{ .name = "ext_sql_lang", .module = ext_sql_lang_mod },
+            .{ .name = "ext_xml_lang", .module = ext_xml_lang_mod },
+            .{ .name = "ext_yaml_lang", .module = ext_yaml_lang_mod },
+            .{ .name = "ext_bat_lang", .module = ext_bat_lang_mod },
+            .{ .name = "ext_dart_lang", .module = ext_dart_lang_mod },
+            .{ .name = "ext_diff_lang", .module = ext_diff_lang_mod },
+            .{ .name = "ext_docker_lang", .module = ext_docker_lang_mod },
+            .{ .name = "ext_ini_lang", .module = ext_ini_lang_mod },
+            .{ .name = "ext_less_lang", .module = ext_less_lang_mod },
+            .{ .name = "ext_lua_lang", .module = ext_lua_lang_mod },
+            .{ .name = "ext_make_lang", .module = ext_make_lang_mod },
+            .{ .name = "ext_perl_lang", .module = ext_perl_lang_mod },
+            .{ .name = "ext_powershell_lang", .module = ext_powershell_lang_mod },
+            .{ .name = "ext_r_lang", .module = ext_r_lang_mod },
+            .{ .name = "ext_scss_lang", .module = ext_scss_lang_mod },
+            .{ .name = "ext_swift_lang", .module = ext_swift_lang_mod },
+            .{ .name = "ext_clojure_lang", .module = ext_clojure_lang_mod },
+            .{ .name = "ext_coffeescript_lang", .module = ext_coffeescript_lang_mod },
+            .{ .name = "ext_dotenv_lang", .module = ext_dotenv_lang_mod },
+            .{ .name = "ext_fsharp_lang", .module = ext_fsharp_lang_mod },
+            .{ .name = "ext_groovy_lang", .module = ext_groovy_lang_mod },
+            .{ .name = "ext_handlebars_lang", .module = ext_handlebars_lang_mod },
+            .{ .name = "ext_hlsl_lang", .module = ext_hlsl_lang_mod },
+            .{ .name = "ext_julia_lang", .module = ext_julia_lang_mod },
+            .{ .name = "ext_latex_lang", .module = ext_latex_lang_mod },
+            .{ .name = "ext_log_lang", .module = ext_log_lang_mod },
+            .{ .name = "ext_objc_lang", .module = ext_objc_lang_mod },
+            .{ .name = "ext_pug_lang", .module = ext_pug_lang_mod },
+            .{ .name = "ext_razor_lang", .module = ext_razor_lang_mod },
+            .{ .name = "ext_rst_lang", .module = ext_rst_lang_mod },
+            .{ .name = "ext_shaderlab_lang", .module = ext_shaderlab_lang_mod },
+            .{ .name = "ext_vb_lang", .module = ext_vb_lang_mod },
             .{ .name = "syntax", .module = syntax_mod },
         },
     });
@@ -446,6 +929,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "context_menu", .module = context_menu_mod },
             .{ .name = "win32", .module = win32_mod },
             .{ .name = "file_tree", .module = file_tree_mod },
+            .{ .name = "file_icons", .module = file_icons_mod },
             .{ .name = "manifest", .module = manifest_mod },
             .{ .name = "extension", .module = extension_mod },
         },
@@ -493,6 +977,7 @@ pub fn build(b: *std.Build) void {
     exe.linkSystemLibrary("winhttp");
     exe.linkSystemLibrary("bcrypt");
     exe.linkSystemLibrary("comdlg32");
+    exe.linkSystemLibrary("shell32");
 
     b.installArtifact(exe);
 
@@ -563,7 +1048,55 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "extension", .module = extension_mod },
                 .{ .name = "ext_zig_lang", .module = ext_zig_lang_mod },
                 .{ .name = "ext_json_lang", .module = ext_json_lang_mod },
+                .{ .name = "ext_markdown_lang", .module = ext_markdown_lang_mod },
+                .{ .name = "ext_typescript_lang", .module = ext_typescript_lang_mod },
+                .{ .name = "ext_javascript_lang", .module = ext_javascript_lang_mod },
+                .{ .name = "ext_python_lang", .module = ext_python_lang_mod },
+                .{ .name = "ext_c_lang", .module = ext_c_lang_mod },
+                .{ .name = "ext_cpp_lang", .module = ext_cpp_lang_mod },
+                .{ .name = "ext_rust_lang", .module = ext_rust_lang_mod },
+                .{ .name = "ext_go_lang", .module = ext_go_lang_mod },
+                .{ .name = "ext_html_lang", .module = ext_html_lang_mod },
+                .{ .name = "ext_css_lang", .module = ext_css_lang_mod },
+                .{ .name = "ext_java_lang", .module = ext_java_lang_mod },
+                .{ .name = "ext_csharp_lang", .module = ext_csharp_lang_mod },
+                .{ .name = "ext_php_lang", .module = ext_php_lang_mod },
+                .{ .name = "ext_ruby_lang", .module = ext_ruby_lang_mod },
+                .{ .name = "ext_shell_lang", .module = ext_shell_lang_mod },
+                .{ .name = "ext_sql_lang", .module = ext_sql_lang_mod },
+                .{ .name = "ext_xml_lang", .module = ext_xml_lang_mod },
+                .{ .name = "ext_yaml_lang", .module = ext_yaml_lang_mod },
+                .{ .name = "ext_bat_lang", .module = ext_bat_lang_mod },
+                .{ .name = "ext_dart_lang", .module = ext_dart_lang_mod },
+                .{ .name = "ext_diff_lang", .module = ext_diff_lang_mod },
+                .{ .name = "ext_docker_lang", .module = ext_docker_lang_mod },
+                .{ .name = "ext_ini_lang", .module = ext_ini_lang_mod },
+                .{ .name = "ext_less_lang", .module = ext_less_lang_mod },
+                .{ .name = "ext_lua_lang", .module = ext_lua_lang_mod },
+                .{ .name = "ext_make_lang", .module = ext_make_lang_mod },
+                .{ .name = "ext_perl_lang", .module = ext_perl_lang_mod },
+                .{ .name = "ext_powershell_lang", .module = ext_powershell_lang_mod },
+                .{ .name = "ext_r_lang", .module = ext_r_lang_mod },
+                .{ .name = "ext_scss_lang", .module = ext_scss_lang_mod },
+                .{ .name = "ext_swift_lang", .module = ext_swift_lang_mod },
+                .{ .name = "ext_clojure_lang", .module = ext_clojure_lang_mod },
+                .{ .name = "ext_coffeescript_lang", .module = ext_coffeescript_lang_mod },
+                .{ .name = "ext_dotenv_lang", .module = ext_dotenv_lang_mod },
+                .{ .name = "ext_fsharp_lang", .module = ext_fsharp_lang_mod },
+                .{ .name = "ext_groovy_lang", .module = ext_groovy_lang_mod },
+                .{ .name = "ext_handlebars_lang", .module = ext_handlebars_lang_mod },
+                .{ .name = "ext_hlsl_lang", .module = ext_hlsl_lang_mod },
+                .{ .name = "ext_julia_lang", .module = ext_julia_lang_mod },
+                .{ .name = "ext_latex_lang", .module = ext_latex_lang_mod },
+                .{ .name = "ext_log_lang", .module = ext_log_lang_mod },
+                .{ .name = "ext_objc_lang", .module = ext_objc_lang_mod },
+                .{ .name = "ext_pug_lang", .module = ext_pug_lang_mod },
+                .{ .name = "ext_razor_lang", .module = ext_razor_lang_mod },
+                .{ .name = "ext_rst_lang", .module = ext_rst_lang_mod },
+                .{ .name = "ext_shaderlab_lang", .module = ext_shaderlab_lang_mod },
+                .{ .name = "ext_vb_lang", .module = ext_vb_lang_mod },
                 .{ .name = "manifest", .module = manifest_mod },
+                .{ .name = "file_icons", .module = file_icons_mod },
             },
         }),
     });

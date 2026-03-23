@@ -588,6 +588,124 @@ def check_language_count(state):
             "Add tokenizer rules for common languages: C, Python, JavaScript, JSON")
 
 
+def check_missing_language_extensions(state):
+    """Check which VS Code built-in language extensions are missing from SBCode."""
+    # VS Code built-in language extensions (from extensions/ directory)
+    # Only include actual language grammars, not features/themes/tools
+    vscode_lang_extensions = [
+        "bat", "clojure", "coffeescript", "cpp", "csharp", "css", "dart",
+        "diff", "docker", "dotenv", "fsharp", "go", "groovy", "handlebars",
+        "hlsl", "html", "ini", "java", "javascript", "json", "julia",
+        "latex", "less", "log", "lua", "make", "markdown-basics",
+        "objective-c", "perl", "php", "powershell", "pug", "python", "r",
+        "razor", "restructuredtext", "ruby", "rust", "scss", "shaderlab",
+        "shellscript", "sql", "swift", "typescript-basics", "vb", "xml", "yaml",
+    ]
+
+    # Map VS Code extension names to SBCode extension file names
+    sbcode_ext_map = {
+        "cpp": "cpp_lang.zig",
+        "csharp": "csharp_lang.zig",
+        "css": "css_lang.zig",
+        "go": "go_lang.zig",
+        "html": "html_lang.zig",
+        "java": "java_lang.zig",
+        "javascript": "javascript_lang.zig",
+        "json": "json_lang.zig",
+        "markdown-basics": "markdown_lang.zig",
+        "python": "python_lang.zig",
+        "ruby": "ruby_lang.zig",
+        "rust": "rust_lang.zig",
+        "typescript-basics": "typescript_lang.zig",
+        "yaml": "yaml_lang.zig",
+        "xml": "xml_lang.zig",
+        "sql": "sql_lang.zig",
+        "shellscript": "shell_lang.zig",
+        "php": "php_lang.zig",
+        "lua": "lua_lang.zig",
+        "perl": "perl_lang.zig",
+        "swift": "swift_lang.zig",
+        "dart": "dart_lang.zig",
+        "r": "r_lang.zig",
+        "bat": "bat_lang.zig",
+        "clojure": "clojure_lang.zig",
+        "coffeescript": "coffeescript_lang.zig",
+        "diff": "diff_lang.zig",
+        "docker": "docker_lang.zig",
+        "dotenv": "dotenv_lang.zig",
+        "fsharp": "fsharp_lang.zig",
+        "groovy": "groovy_lang.zig",
+        "handlebars": "handlebars_lang.zig",
+        "hlsl": "hlsl_lang.zig",
+        "ini": "ini_lang.zig",
+        "julia": "julia_lang.zig",
+        "latex": "latex_lang.zig",
+        "less": "less_lang.zig",
+        "log": "log_lang.zig",
+        "make": "make_lang.zig",
+        "objective-c": "objc_lang.zig",
+        "powershell": "powershell_lang.zig",
+        "pug": "pug_lang.zig",
+        "razor": "razor_lang.zig",
+        "restructuredtext": "rst_lang.zig",
+        "scss": "scss_lang.zig",
+        "shaderlab": "shaderlab_lang.zig",
+        "vb": "vb_lang.zig",
+    }
+
+    # Check which extensions exist in src/extensions/
+    ext_dir = "src/extensions"
+    existing_files = set()
+    if os.path.isdir(ext_dir):
+        for f in os.listdir(ext_dir):
+            if f.endswith("_lang.zig"):
+                existing_files.add(f)
+
+    # Also count zig_lang.zig which is SBCode-specific (not in VS Code)
+    # existing_files already includes it
+
+    # Categorize missing extensions by priority
+    high_priority = {"java", "yaml", "xml", "sql", "shellscript", "php", "ruby", "csharp"}
+    medium_priority = {"lua", "perl", "swift", "dart", "r", "scss", "less",
+                       "powershell", "docker", "ini", "make", "diff", "bat"}
+    # Everything else is low priority
+
+    missing_high = []
+    missing_medium = []
+    missing_low = []
+
+    for ext_name in vscode_lang_extensions:
+        expected_file = sbcode_ext_map.get(ext_name)
+        if expected_file and expected_file not in existing_files:
+            if ext_name in high_priority:
+                missing_high.append(ext_name)
+            elif ext_name in medium_priority:
+                missing_medium.append(ext_name)
+            else:
+                missing_low.append(ext_name)
+
+    if missing_high:
+        names = ", ".join(sorted(missing_high))
+        gap(state, Severity.HIGH, "Language Extensions",
+            f"Missing high-priority language extensions: {names}",
+            f"{len(missing_high)} core languages from VS Code have no SBCode extension",
+            f"Create src/extensions/<lang>_lang.zig for: {names}")
+
+    if missing_medium:
+        names = ", ".join(sorted(missing_medium))
+        gap(state, Severity.MEDIUM, "Language Extensions",
+            f"Missing medium-priority language extensions: {names}",
+            f"{len(missing_medium)} common languages from VS Code have no SBCode extension",
+            f"Create src/extensions/<lang>_lang.zig for: {names}")
+
+    if missing_low:
+        names = ", ".join(sorted(missing_low))
+        gap(state, Severity.LOW, "Language Extensions",
+            f"Missing low-priority language extensions: {names}",
+            f"{len(missing_low)} niche languages from VS Code have no SBCode extension",
+            f"Create src/extensions/<lang>_lang.zig for: {names}")
+
+
 # ─── 8. Platform Services ─────────────────────────────────────────────────────
 
 def check_file_save_as(state):
@@ -1070,6 +1188,7 @@ def main():
     # ── Syntax ──
     check_language_detection(state)
     check_language_count(state)
+    check_missing_language_extensions(state)
 
     # ── Platform Services ──
     check_file_save_as(state)
