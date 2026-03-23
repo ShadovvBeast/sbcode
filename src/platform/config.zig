@@ -112,6 +112,38 @@ pub const Config = struct {
     pub fn fontNameSlice(self: *const Config) []const u8 {
         return self.font_name[0..self.font_name_len];
     }
+
+    /// Save current config to config.json on disk.
+    pub fn save(self: *const Config) bool {
+        // Build a JSON string from current config values
+        var buf: [2048]u8 = undefined;
+        var pos: usize = 0;
+
+        const header = "{\"font_size\":";
+        @memcpy(buf[pos..][0..header.len], header);
+        pos += header.len;
+
+        // Write font_size as digits
+        pos += writeI32(buf[pos..], self.font_size);
+
+        const tab_hdr = ",\"tab_size\":";
+        @memcpy(buf[pos..][0..tab_hdr.len], tab_hdr);
+        pos += tab_hdr.len;
+        pos += writeI32(buf[pos..], @as(i32, self.tab_size));
+
+        const wrap_hdr = ",\"word_wrap\":";
+        @memcpy(buf[pos..][0..wrap_hdr.len], wrap_hdr);
+        pos += wrap_hdr.len;
+        const wrap_val = if (self.word_wrap) "true" else "false";
+        @memcpy(buf[pos..][0..wrap_val.len], wrap_val);
+        pos += wrap_val.len;
+
+        buf[pos] = '}';
+        pos += 1;
+
+        const path = win32.L("config.json");
+        return file_service.writeFile(path, buf[0..pos]);
+    }
 };
 
 fn paddedDefault(comptime s: []const u8, comptime len: usize) [len]u8 {
@@ -120,6 +152,30 @@ fn paddedDefault(comptime s: []const u8, comptime len: usize) [len]u8 {
         buf[i] = c;
     }
     return buf;
+}
+
+fn writeI32(buf: []u8, val: i32) usize {
+    var v: u32 = if (val < 0) @intCast(-val) else @intCast(val);
+    var tmp: [11]u8 = undefined;
+    var len: usize = 0;
+    if (v == 0) {
+        buf[0] = '0';
+        return 1;
+    }
+    while (v > 0) : (len += 1) {
+        tmp[len] = @intCast('0' + (v % 10));
+        v /= 10;
+    }
+    var start: usize = 0;
+    if (val < 0) {
+        buf[0] = '-';
+        start = 1;
+    }
+    var i: usize = 0;
+    while (i < len) : (i += 1) {
+        buf[start + i] = tmp[len - 1 - i];
+    }
+    return start + len;
 }
 
 fn floatToI32(v: f64) i32 {

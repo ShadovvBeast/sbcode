@@ -6,6 +6,13 @@
 const w32 = @import("win32");
 const App = @import("app").App;
 
+/// Global App instance — stored as a file-level var (static storage) to avoid
+/// stack overflow. The App struct is ~50MB+ due to TextBuffer (4MB), SyntaxHighlighter
+/// (48MB), etc. Windows default stack is 1MB; even enlarged stacks can't hold it.
+/// File-level var is zero-allocation static storage — satisfies the project's
+/// "zero heap allocations" constraint.
+var app: App = .{};
+
 pub fn wWinMain(
     hInstance: w32.HINSTANCE,
     hPrevInstance: ?w32.HINSTANCE,
@@ -16,8 +23,6 @@ pub fn wWinMain(
     _ = hPrevInstance;
     _ = lpCmdLine;
     _ = nCmdShow;
-
-    var app: App = .{};
 
     if (!app.init()) {
         return 1;

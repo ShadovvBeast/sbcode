@@ -58,6 +58,10 @@ zig build test     # Run all tests
 
 Target: x86_64-windows. Links: opengl32, gdi32, user32, kernel32, winhttp, bcrypt. No libc.
 
+## Quality Scripts Policy
+
+The audit script (`scripts/audit.py`) and feature gap script (`scripts/feature_gap.py`) are the source of truth for code quality and completeness. Relaxing, weakening, or modifying these scripts to reduce findings is strictly prohibited. When a script reports a gap or issue, the only acceptable response is to fix the underlying code. Never change the script itself to make findings disappear.
+
 ## Key Files
 
 - `build.zig` — Build configuration, all module definitions and dependency wiring

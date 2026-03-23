@@ -52,6 +52,21 @@ pub const CursorState = struct {
         self.cursor_count += 1;
         return true;
     }
+
+    /// Set the primary cursor's active position without moving the anchor.
+    /// This extends or shrinks the selection.
+    pub fn setSelection(self: *CursorState, anchor: Position, active: Position) void {
+        self.cursors[0] = .{ .anchor = anchor, .active = active };
+        self.cursor_count = 1;
+    }
+
+    /// Get the selected text range for the primary cursor.
+    /// Returns null if selection is empty.
+    pub fn getSelectionRange(self: *const CursorState) ?struct { start: Position, end: Position } {
+        const sel = self.cursors[0];
+        if (sel.isEmpty()) return null;
+        return .{ .start = sel.startPos(), .end = sel.endPos() };
+    }
 };
 
 // ============================================================================

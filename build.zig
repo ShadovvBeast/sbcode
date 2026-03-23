@@ -62,6 +62,16 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const diff_mod = b.createModule(.{
+        .root_source_file = b.path("src/base/diff.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const glob_mod = b.createModule(.{
+        .root_source_file = b.path("src/base/glob.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const ring_buffer_prop_test_mod = b.createModule(.{
         .root_source_file = b.path("src/tests/ring_buffer_prop_test.zig"),
         .target = target,
@@ -331,6 +341,15 @@ pub fn build(b: *std.Build) void {
             .{ .name = "font_atlas", .module = font_atlas_mod },
             .{ .name = "color", .module = color_mod },
             .{ .name = "rect", .module = rect_mod },
+            .{ .name = "win32", .module = win32_mod },
+        },
+    });
+    const context_menu_mod = b.createModule(.{
+        .root_source_file = b.path("src/workbench/context_menu.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "win32", .module = win32_mod },
         },
     });
     const status_bar_mod = b.createModule(.{
@@ -363,6 +382,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "rect", .module = rect_mod },
             .{ .name = "file_service", .module = file_service_mod },
             .{ .name = "status_bar", .module = status_bar_mod },
+            .{ .name = "activity_bar", .module = activity_bar_mod },
+            .{ .name = "sidebar", .module = sidebar_mod },
+            .{ .name = "panel", .module = panel_mod },
+            .{ .name = "context_menu", .module = context_menu_mod },
             .{ .name = "win32", .module = win32_mod },
         },
     });
@@ -378,6 +401,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "input", .module = input_mod },
             .{ .name = "color", .module = color_mod },
             .{ .name = "rect", .module = rect_mod },
+            .{ .name = "workbench", .module = workbench_mod },
         },
     });
     // Main executable — imports win32 and app so main.zig can use them
@@ -407,8 +431,15 @@ pub fn build(b: *std.Build) void {
     exe.linkSystemLibrary("kernel32");
     exe.linkSystemLibrary("winhttp");
     exe.linkSystemLibrary("bcrypt");
+    exe.linkSystemLibrary("comdlg32");
 
     b.installArtifact(exe);
+
+    // Run step
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+    const run_step = b.step("run", "Run SBCode");
+    run_step.dependOn(&run_cmd.step);
 
     // Test step
     const tests = b.addTest(.{
@@ -460,9 +491,12 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "activity_bar", .module = activity_bar_mod },
                 .{ .name = "sidebar", .module = sidebar_mod },
                 .{ .name = "panel", .module = panel_mod },
+                .{ .name = "context_menu", .module = context_menu_mod },
                 .{ .name = "status_bar", .module = status_bar_mod },
                 .{ .name = "workbench", .module = workbench_mod },
                 .{ .name = "app", .module = app_mod },
+                .{ .name = "diff", .module = diff_mod },
+                .{ .name = "glob", .module = glob_mod },
             },
         }),
     });

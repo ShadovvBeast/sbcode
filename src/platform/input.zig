@@ -30,6 +30,7 @@ pub const InputState = struct {
     // Mouse button edge triggers (reset each frame)
     left_button_pressed: bool = false,
     left_button_released: bool = false,
+    right_button_pressed: bool = false,
 
     // Scroll (reset each frame)
     scroll_delta: i32 = 0,
@@ -47,6 +48,7 @@ pub const InputState = struct {
     pub fn beginFrame(self: *InputState) void {
         self.left_button_pressed = false;
         self.left_button_released = false;
+        self.right_button_pressed = false;
         self.scroll_delta = 0;
         self.mouse_dx = 0;
         self.mouse_dy = 0;

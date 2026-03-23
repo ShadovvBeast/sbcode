@@ -14,6 +14,7 @@ const TextBuffer = @import("buffer").TextBuffer;
 const cursor_mod = @import("cursor");
 const CursorState = cursor_mod.CursorState;
 const Selection = cursor_mod.Selection;
+const Position = cursor_mod.Position;
 const Color = @import("color").Color;
 const Rect = @import("rect").Rect;
 
@@ -55,9 +56,44 @@ pub fn tokenColor(kind: TokenKind) Color {
 pub const CURSOR_COLOR = Color.rgb(0xFF, 0xFF, 0xFF);
 // Cursor bar width in pixels
 pub const CURSOR_WIDTH: f32 = 2.0;
+// Cursor blink interval in seconds (toggled by workbench blink_timer)
+pub const CURSOR_BLINK_INTERVAL: f64 = 0.53;
 
 // Selection highlight color (semi-transparent blue, matching VS Code)
+const SELECTION_BG = Color.rgba(0x26, 0x4F, 0x78, 0xCC);
+
+// Indent guide line color (subtle vertical lines at tab stops)
+const indent_guide_color = Color.rgba(0x40, 0x40, 0x40, 0x80);
+
+// Word highlight color (highlight all occurrences of word under cursor)
+const word_highlight_bg = Color.rgba(0x57, 0x57, 0x57, 0x40);
+
+// Code folding gutter indicator color
+const fold_indicator_color = Color.rgba(0x80, 0x80, 0x80, 0x60);
+
+// Word wrap mode flag (soft line wrapping)
+var word_wrap_enabled: bool = false;
 pub const SELECTION_COLOR = Color.rgba(0x26, 0x4F, 0x78, 0x80);
+
+// Line number gutter colors
+const LINE_NUMBER_COLOR = Color.rgb(0x85, 0x85, 0x85);
+const ACTIVE_LINE_NUMBER_COLOR = Color.rgb(0xC6, 0xC6, 0xC6);
+const GUTTER_BG = Color.rgb(0x1E, 0x1E, 0x1E);
+
+// Current line highlight
+const CURRENT_LINE_BG = Color.rgba(0xFF, 0xFF, 0xFF, 0x0A);
+
+// Scrollbar colors
+const SCROLLBAR_TRACK_COLOR = Color.rgba(0x1E, 0x1E, 0x1E, 0x00);
+const SCROLLBAR_THUMB_COLOR = Color.rgba(0x79, 0x79, 0x79, 0x66);
+
+// Bracket matching highlight
+const BRACKET_MATCH_BG = Color.rgba(0x00, 0x6E, 0xD1, 0x40);
+const BRACKET_MATCH_BORDER = Color.rgba(0x00, 0x6E, 0xD1, 0x80);
+const bracket_match_enabled = true;
+
+// Gutter width in characters (line numbers)
+pub const GUTTER_CHAR_WIDTH: u32 = 5;
 
 // =============================================================================
 // EditorViewport
@@ -93,19 +129,22 @@ pub fn renderEditorViewport(
     font_atlas: *const FontAtlas,
     scroll_top: u32,
     visible_lines: u32,
+    cursor_visible: bool,
 ) void {
-    // Enable scissor test clipped to editor area
     gl.glEnable(gl.GL_SCISSOR_TEST);
-    // glScissor uses bottom-left origin; convert from top-left Rect
-    // We assume the GL viewport matches the window with glOrtho(0, w, h, 0, -1, 1)
-    // so scissor Y must be flipped. However, since we don't know window height here,
-    // we pass the rect as-is — the caller's glOrtho setup with top-down coords means
-    // scissor Y = area.y works when the viewport is set up with matching dimensions.
     gl.glScissor(area.x, area.y, area.w, area.h);
 
     const line_height: f32 = @floatFromInt(font_atlas.cell_h);
+    const cell_w: f32 = @floatFromInt(font_atlas.cell_w);
     const area_x: f32 = @floatFromInt(area.x);
     const area_y: f32 = @floatFromInt(area.y);
+
+    // Gutter width for line numbers
+    const gutter_w: f32 = @as(f32, @floatFromInt(GUTTER_CHAR_WIDTH)) * cell_w;
+    const text_x = area_x + gutter_w;
+
+    // Get cursor line for current line highlight
+    const cursor_line = cursor_state.primary().active.line;
 
     // Render visible lines
     var line_offset: u32 = 0;
@@ -116,27 +155,190 @@ pub fn renderEditorViewport(
         const line_text = buffer.getLine(line_idx) orelse continue;
         const y = area_y + @as(f32, @floatFromInt(line_offset)) * line_height;
 
+        // Current line highlight background
+        if (line_idx == cursor_line) {
+            drawRect(area_x, y, @floatFromInt(area.w), line_height, CURRENT_LINE_BG);
+        }
+
+        // Line number gutter
+        drawLineNumber(line_idx + 1, line_idx == cursor_line, area_x, y, font_atlas);
+
         // Tokenize the line
         highlighter.tokenizeLine(line_idx, line_text);
         const ls: *const LineSyntax = &highlighter.line_syntax[line_idx];
 
         // Draw selection highlights behind text
-        drawSelectionHighlights(cursor_state, line_idx, area_x, y, line_height, font_atlas, line_text.len);
+        drawSelectionHighlights(cursor_state, line_idx, text_x, y, line_height, font_atlas, line_text.len);
 
         // Draw each syntax token
-        drawTokens(ls, line_text, area_x, y, font_atlas);
+        drawTokens(ls, line_text, text_x, y, font_atlas);
+
+        // Draw bracket matching highlight
+        if (bracket_match_enabled)
+            drawBracketMatch(buffer, cursor_state, line_idx, text_x, y, line_height, font_atlas);
 
         // Draw cursor bars
-        drawCursors(cursor_state, line_idx, scroll_top, visible_lines, area_x, y, line_height, font_atlas);
+        if (cursor_visible) {
+            drawCursors(cursor_state, line_idx, scroll_top, visible_lines, text_x, y, line_height, font_atlas);
+        }
     }
 
-    // Disable scissor test
+    // Draw scrollbar
+    drawScrollbar(area, buffer.line_count, scroll_top, visible_lines);
+
     gl.glDisable(gl.GL_SCISSOR_TEST);
 }
 
 // =============================================================================
 // Internal rendering helpers
 // =============================================================================
+
+fn drawRect(x: f32, y: f32, w: f32, h: f32, color: Color) void {
+    gl.glDisable(gl.GL_TEXTURE_2D);
+    gl.glColor4f(color.r, color.g, color.b, color.a);
+    gl.glBegin(gl.GL_QUADS);
+    gl.glVertex2f(x, y);
+    gl.glVertex2f(x + w, y);
+    gl.glVertex2f(x + w, y + h);
+    gl.glVertex2f(x, y + h);
+    gl.glEnd();
+}
+
+fn drawLineNumber(line_num: u32, is_active: bool, area_x: f32, y: f32, font_atlas: *const FontAtlas) void {
+    const color = if (is_active) ACTIVE_LINE_NUMBER_COLOR else LINE_NUMBER_COLOR;
+    const cell_w: f32 = @floatFromInt(font_atlas.cell_w);
+
+    // Format line number right-aligned in gutter (up to 4 digits + 1 space)
+    var digits: [5]u8 = [_]u8{' '} ** 5;
+    var n = line_num;
+    var pos: usize = 3; // rightmost digit position (0-indexed, 4th char)
+    while (n > 0) : (pos -|= 1) {
+        digits[pos] = @intCast((n % 10) + '0');
+        n /= 10;
+        if (pos == 0) break;
+    }
+
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        const ch = digits[i];
+        if (ch != ' ') {
+            const x = area_x + @as(f32, @floatFromInt(i)) * cell_w;
+            font_atlas.renderGlyphColored(ch, x, y, color);
+        }
+    }
+}
+
+fn drawScrollbar(area: Rect, total_lines: u32, scroll_top: u32, visible_lines: u32) void {
+    if (total_lines == 0 or visible_lines >= total_lines) return;
+
+    const scroll_track_w: f32 = 14.0;
+    const area_x: f32 = @as(f32, @floatFromInt(area.x + area.w)) - scroll_track_w;
+    const area_y: f32 = @floatFromInt(area.y);
+    const area_h: f32 = @floatFromInt(area.h);
+
+    // Draw track
+    drawRect(area_x, area_y, scroll_track_w, area_h, SCROLLBAR_TRACK_COLOR);
+
+    // Compute thumb size and position
+    const ratio = @as(f32, @floatFromInt(visible_lines)) / @as(f32, @floatFromInt(total_lines));
+    const thumb_h = @max(20.0, area_h * ratio);
+    const scroll_range = @as(f32, @floatFromInt(total_lines - visible_lines));
+    const thumb_y = if (scroll_range > 0)
+        area_y + (@as(f32, @floatFromInt(scroll_top)) / scroll_range) * (area_h - thumb_h)
+    else
+        area_y;
+
+    drawRect(area_x, thumb_y, scroll_track_w, thumb_h, SCROLLBAR_THUMB_COLOR);
+}
+
+fn drawBracketMatch(
+    buffer: *const TextBuffer,
+    cursor_state: *const CursorState,
+    line_idx: u32,
+    text_x: f32,
+    y: f32,
+    line_height: f32,
+    font_atlas: *const FontAtlas,
+) void {
+    const cur = cursor_state.primary().active;
+    const cur_line = cur.line;
+    const cur_col = cur.col;
+
+    // Only check bracket matching on cursor line
+    if (line_idx != cur_line) {
+        // Check if this line has the matching bracket
+        const line_text = buffer.getLine(cur_line) orelse return;
+        if (cur_col >= line_text.len) return;
+        const ch = line_text[cur_col];
+        const match_info = findMatchingBracket(buffer, cur_line, cur_col, ch) orelse return;
+        if (match_info.line != line_idx) return;
+        // Draw highlight on matching bracket
+        const cell_w: f32 = @floatFromInt(font_atlas.cell_w);
+        const mx = text_x + @as(f32, @floatFromInt(match_info.col)) * cell_w;
+        drawRect(mx, y, cell_w, line_height, BRACKET_MATCH_BG);
+        return;
+    }
+
+    // On cursor line, highlight bracket at cursor
+    const line_text = buffer.getLine(cur_line) orelse return;
+    if (cur_col >= line_text.len) return;
+    const ch = line_text[cur_col];
+    if (!isBracket(ch)) return;
+
+    const cell_w: f32 = @floatFromInt(font_atlas.cell_w);
+    const bx = text_x + @as(f32, @floatFromInt(cur_col)) * cell_w;
+    drawRect(bx, y, cell_w, line_height, BRACKET_MATCH_BG);
+}
+
+fn isBracket(ch: u8) bool {
+    return ch == '(' or ch == ')' or ch == '[' or ch == ']' or ch == '{' or ch == '}';
+}
+
+const BracketPair = struct { close: u8, dir: i32 };
+
+fn findMatchingBracket(buffer: *const TextBuffer, line: u32, col: u32, ch: u8) ?Position {
+    const open_close: BracketPair = switch (ch) {
+        '(' => .{ .close = ')', .dir = 1 },
+        '[' => .{ .close = ']', .dir = 1 },
+        '{' => .{ .close = '}', .dir = 1 },
+        ')' => .{ .close = '(', .dir = -1 },
+        ']' => .{ .close = '[', .dir = -1 },
+        '}' => .{ .close = '{', .dir = -1 },
+        else => return null,
+    };
+
+    var depth: i32 = 0;
+    var cur_line: i32 = @intCast(line);
+    var cur_col: i32 = @intCast(col);
+
+    // Move one step in direction first
+    cur_col += open_close.dir;
+
+    var iterations: u32 = 0;
+    while (iterations < 5000) : (iterations += 1) {
+        if (cur_line < 0 or cur_line >= @as(i32, @intCast(buffer.line_count))) break;
+        const lt = buffer.getLine(@intCast(cur_line)) orelse break;
+        if (cur_col < 0 or cur_col >= @as(i32, @intCast(lt.len))) {
+            // Move to next/prev line
+            cur_line += open_close.dir;
+            if (cur_line < 0 or cur_line >= @as(i32, @intCast(buffer.line_count))) break;
+            const next_lt = buffer.getLine(@intCast(cur_line)) orelse break;
+            cur_col = if (open_close.dir > 0) 0 else @as(i32, @intCast(next_lt.len)) - 1;
+            continue;
+        }
+        const c = lt[@intCast(cur_col)];
+        if (c == ch) {
+            depth += 1;
+        } else if (c == open_close.close) {
+            if (depth == 0) {
+                return .{ .line = @intCast(cur_line), .col = @intCast(cur_col) };
+            }
+            depth -= 1;
+        }
+        cur_col += open_close.dir;
+    }
+    return null;
+}
 
 fn drawTokens(
     ls: *const LineSyntax,

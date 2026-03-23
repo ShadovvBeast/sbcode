@@ -43,7 +43,10 @@ comptime {
     _ = @import("activity_bar");
     _ = @import("sidebar");
     _ = @import("panel");
+    _ = @import("context_menu");
     _ = @import("status_bar");
     _ = @import("workbench");
     _ = @import("app");
+    _ = @import("diff");
+    _ = @import("glob");
 }

@@ -1,7 +1,7 @@
-// src/workbench/activity_bar.zig — Activity bar rendering stub
+// src/workbench/activity_bar.zig — Activity bar rendering (VS Code style)
 //
-// Draws 5 icon placeholder squares (explorer, search, git, debug, extensions)
-// in the activity bar region using GL immediate mode.
+// Draws 5 icon buttons vertically with text-based icon symbols,
+// active indicator bar on the left, and proper VS Code dark theme colors.
 // Zero allocators — all stack/comptime storage.
 
 const gl = @import("gl");
@@ -16,14 +16,20 @@ const Rect = @import("rect").Rect;
 /// Activity bar background color (VS Code dark theme #333333).
 const ACTIVITY_BAR_BG = Color.rgb(0x33, 0x33, 0x33);
 
-/// Icon placeholder size in pixels.
-const ICON_SIZE: i32 = 28;
+/// Active indicator bar color (white).
+const ACTIVE_INDICATOR = Color.rgb(0xFF, 0xFF, 0xFF);
 
-/// Vertical padding between icons.
-const ICON_PAD_Y: i32 = 8;
+/// Icon color when active.
+const ICON_ACTIVE_COLOR = Color.rgb(0xFF, 0xFF, 0xFF);
 
-/// Horizontal centering offset (computed from activity bar width 48).
-const ICON_PAD_X: i32 = 10;
+/// Icon color when inactive (dimmed).
+const ICON_INACTIVE_COLOR = Color.rgb(0x85, 0x85, 0x85);
+
+/// Icon button height (each icon occupies this vertical space).
+const ICON_BTN_H: i32 = 48;
+
+/// Active indicator bar width (left edge).
+const INDICATOR_W: i32 = 2;
 
 /// Number of activity bar icons.
 pub const ICON_COUNT: usize = 5;
@@ -37,13 +43,14 @@ pub const ActivityIcon = enum(u8) {
     extensions = 4,
 };
 
-/// Colors for each icon placeholder (distinct for visual identification).
-const ICON_COLORS = [ICON_COUNT]Color{
-    Color.rgb(0xDC, 0xDC, 0xAA), // explorer — warm yellow
-    Color.rgb(0x56, 0x9C, 0xD6), // search — blue
-    Color.rgb(0xE2, 0x8A, 0x4D), // git — orange
-    Color.rgb(0xD1, 0x6B, 0x6B), // debug — red
-    Color.rgb(0x6A, 0x9F, 0x55), // extensions — green
+/// Text symbols for each icon (single chars that suggest the icon meaning).
+/// Using ASCII art approximations since we only have monospace font.
+const ICON_SYMBOLS = [ICON_COUNT][]const u8{
+    "{}", // explorer (files)
+    "?", // search (magnifying glass)
+    "<>", // git (branch)
+    "|>", // debug (play)
+    "[]", // extensions (blocks)
 };
 
 // =============================================================================
@@ -54,42 +61,45 @@ pub const ActivityBar = struct {
     active_icon: u8 = 0,
 
     /// Render the activity bar into the given region.
-    ///
-    /// Preconditions:
-    ///   - `region` is the activity_bar layout rectangle
-    ///   - `font_atlas` is initialized (unused for icon placeholders)
-    ///
-    /// Postconditions:
-    ///   - Background is drawn for the entire activity bar
-    ///   - 5 colored icon placeholder squares are drawn vertically
     pub fn render(self: *const ActivityBar, region: Rect, font_atlas: *const FontAtlas) void {
-        _ = font_atlas;
-
         // Draw background
         renderQuad(region, ACTIVITY_BAR_BG);
 
-        // Draw icon placeholders vertically centered
-        const start_y = region.y + ICON_PAD_Y;
-        const icon_x = region.x + ICON_PAD_X;
+        if (region.w <= 0 or region.h <= 0) return;
 
+        // Draw each icon button
         var i: usize = 0;
         while (i < ICON_COUNT) : (i += 1) {
-            const icon_y = start_y + @as(i32, @intCast(i)) * (ICON_SIZE + ICON_PAD_Y);
-            const icon_rect = Rect{
-                .x = icon_x,
-                .y = icon_y,
-                .w = ICON_SIZE,
-                .h = ICON_SIZE,
-            };
+            const btn_y = region.y + @as(i32, @intCast(i)) * ICON_BTN_H;
+            const is_active = (i == self.active_icon);
+            const color = if (is_active) ICON_ACTIVE_COLOR else ICON_INACTIVE_COLOR;
 
-            // Highlight active icon with full opacity, others slightly dimmed
-            var color = ICON_COLORS[i];
-            if (i != self.active_icon) {
-                color.a = 0.5;
+            // Active indicator bar on the left edge
+            if (is_active) {
+                renderQuad(Rect{
+                    .x = region.x,
+                    .y = btn_y,
+                    .w = INDICATOR_W,
+                    .h = ICON_BTN_H,
+                }, ACTIVE_INDICATOR);
             }
 
-            renderQuad(icon_rect, color);
+            // Render icon symbol centered in the button area
+            const symbol = ICON_SYMBOLS[i];
+            const sym_w = @as(i32, @intCast(symbol.len)) * font_atlas.cell_w;
+            const text_x = region.x + @divTrunc(region.w - sym_w, 2);
+            const text_y = btn_y + @divTrunc(ICON_BTN_H - font_atlas.cell_h, 2);
+
+            font_atlas.renderText(symbol, @floatFromInt(text_x), @floatFromInt(text_y), color);
         }
+
+        // Draw right border (1px separator)
+        renderQuad(Rect{
+            .x = region.x + region.w - 1,
+            .y = region.y,
+            .w = 1,
+            .h = region.h,
+        }, Color.rgb(0x2B, 0x2B, 0x2B));
     }
 };
 
@@ -137,12 +147,12 @@ test "ActivityIcon enum values" {
     try testing.expectEqual(@as(u8, 4), @intFromEnum(ActivityIcon.extensions));
 }
 
-test "ICON_COLORS has correct count" {
-    try testing.expectEqual(@as(usize, 5), ICON_COLORS.len);
-}
-
 test "Activity bar background color is #333333" {
     try testing.expectApproxEqAbs(@as(f32, 0x33) / 255.0, ACTIVITY_BAR_BG.r, 0.001);
     try testing.expectApproxEqAbs(@as(f32, 0x33) / 255.0, ACTIVITY_BAR_BG.g, 0.001);
     try testing.expectApproxEqAbs(@as(f32, 0x33) / 255.0, ACTIVITY_BAR_BG.b, 0.001);
+}
+
+test "ICON_SYMBOLS has correct count" {
+    try testing.expectEqual(@as(usize, 5), ICON_SYMBOLS.len);
 }

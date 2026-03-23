@@ -137,6 +137,74 @@ pub const PIXELFORMATDESCRIPTOR = extern struct {
     dwDamageMask: DWORD,
 };
 
+pub const OPENFILENAMEW = extern struct {
+    lStructSize: DWORD,
+    hwndOwner: ?HWND,
+    hInstance: ?HINSTANCE,
+    lpstrFilter: ?[*:0]const u16,
+    lpstrCustomFilter: ?[*]u16,
+    nMaxCustFilter: DWORD,
+    nFilterIndex: DWORD,
+    lpstrFile: [*]u16,
+    nMaxFile: DWORD,
+    lpstrFileTitle: ?[*]u16,
+    nMaxFileTitle: DWORD,
+    lpstrInitialDir: ?[*:0]const u16,
+    lpstrTitle: ?[*:0]const u16,
+    Flags: DWORD,
+    nFileOffset: WORD,
+    nFileExtension: WORD,
+    lpstrDefExt: ?[*:0]const u16,
+    lCustData: LPARAM,
+    lpfnHook: ?*anyopaque,
+    lpTemplateName: ?[*:0]const u16,
+    pvReserved: ?*anyopaque,
+    dwReserved: DWORD,
+    FlagsEx: DWORD,
+};
+
+pub const OFN_FILEMUSTEXIST: DWORD = 0x00001000;
+pub const OFN_PATHMUSTEXIST: DWORD = 0x00000800;
+pub const OFN_NOCHANGEDIR: DWORD = 0x00000008;
+
+pub const SECURITY_ATTRIBUTES = extern struct {
+    nLength: DWORD,
+    lpSecurityDescriptor: ?*anyopaque,
+    bInheritHandle: BOOL,
+};
+
+pub const STARTUPINFOW = extern struct {
+    cb: DWORD,
+    lpReserved: ?[*:0]u16,
+    lpDesktop: ?[*:0]u16,
+    lpTitle: ?[*:0]u16,
+    dwX: DWORD,
+    dwY: DWORD,
+    dwXSize: DWORD,
+    dwYSize: DWORD,
+    dwXCountChars: DWORD,
+    dwYCountChars: DWORD,
+    dwFillAttribute: DWORD,
+    dwFlags: DWORD,
+    wShowWindow: WORD,
+    cbReserved2: WORD,
+    lpReserved2: ?*u8,
+    hStdInput: ?HANDLE,
+    hStdOutput: ?HANDLE,
+    hStdError: ?HANDLE,
+};
+
+pub const PROCESS_INFORMATION = extern struct {
+    hProcess: ?HANDLE,
+    hThread: ?HANDLE,
+    dwProcessId: DWORD,
+    dwThreadId: DWORD,
+};
+
+pub const STARTF_USESTDHANDLES: DWORD = 0x00000100;
+pub const CREATE_NO_WINDOW: DWORD = 0x08000000;
+pub const HANDLE_FLAG_INHERIT: DWORD = 0x00000001;
+
 // =============================================================================
 // Window style constants
 // =============================================================================
@@ -204,6 +272,14 @@ pub const VK_MENU: i32 = 0x12; // Alt key
 
 pub const HTCAPTION: LRESULT = 2;
 pub const HTCLIENT: LRESULT = 1;
+pub const HTLEFT: LRESULT = 10;
+pub const HTRIGHT: LRESULT = 11;
+pub const HTTOP: LRESULT = 12;
+pub const HTTOPLEFT: LRESULT = 13;
+pub const HTTOPRIGHT: LRESULT = 14;
+pub const HTBOTTOM: LRESULT = 15;
+pub const HTBOTTOMLEFT: LRESULT = 16;
+pub const HTBOTTOMRIGHT: LRESULT = 17;
 
 // =============================================================================
 // Pixel format descriptor flags
@@ -264,6 +340,8 @@ pub extern "user32" fn GetDC(HWND) callconv(cc) ?HDC;
 pub extern "user32" fn ReleaseDC(HWND, HDC) callconv(cc) i32;
 pub extern "user32" fn GetKeyState(i32) callconv(cc) i16;
 pub extern "user32" fn LoadImageW(?HINSTANCE, [*:0]const u16, UINT, i32, i32, UINT) callconv(cc) ?HICON;
+pub extern "user32" fn PostMessageW(HWND, UINT, WPARAM, LPARAM) callconv(cc) BOOL;
+pub extern "user32" fn GetWindowRect(HWND, *RECT) callconv(cc) BOOL;
 
 // LoadImageW constants
 pub const IMAGE_ICON: UINT = 1;
@@ -278,10 +356,15 @@ pub extern "kernel32" fn GetModuleHandleW(?[*:0]const u16) callconv(cc) ?HINSTAN
 pub extern "kernel32" fn QueryPerformanceCounter(*LARGE_INTEGER) callconv(cc) BOOL;
 pub extern "kernel32" fn QueryPerformanceFrequency(*LARGE_INTEGER) callconv(cc) BOOL;
 pub extern "kernel32" fn GetLastError() callconv(cc) DWORD;
-pub extern "kernel32" fn CreateFileW([*:0]const u16, DWORD, DWORD, ?*anyopaque, DWORD, DWORD, ?*opaque {}) callconv(cc) ?*opaque {};
-pub extern "kernel32" fn ReadFile(?*opaque {}, [*]u8, DWORD, ?*DWORD, ?*anyopaque) callconv(cc) BOOL;
-pub extern "kernel32" fn WriteFile(?*opaque {}, [*]const u8, DWORD, ?*DWORD, ?*anyopaque) callconv(cc) BOOL;
-pub extern "kernel32" fn CloseHandle(?*opaque {}) callconv(cc) BOOL;
+pub extern "kernel32" fn CreateFileW([*:0]const u16, DWORD, DWORD, ?*anyopaque, DWORD, DWORD, ?HANDLE) callconv(cc) ?HANDLE;
+pub extern "kernel32" fn ReadFile(?HANDLE, [*]u8, DWORD, ?*DWORD, ?*anyopaque) callconv(cc) BOOL;
+pub extern "kernel32" fn WriteFile(?HANDLE, [*]const u8, DWORD, ?*DWORD, ?*anyopaque) callconv(cc) BOOL;
+pub extern "kernel32" fn CloseHandle(?HANDLE) callconv(cc) BOOL;
+pub extern "kernel32" fn CreateProcessW(?[*:0]const u16, ?[*:0]u16, ?*anyopaque, ?*anyopaque, BOOL, DWORD, ?*anyopaque, ?[*:0]const u16, *STARTUPINFOW, *PROCESS_INFORMATION) callconv(cc) BOOL;
+pub extern "kernel32" fn CreatePipe(*?HANDLE, *?HANDLE, ?*SECURITY_ATTRIBUTES, DWORD) callconv(cc) BOOL;
+pub extern "kernel32" fn PeekNamedPipe(?HANDLE, ?[*]u8, DWORD, ?*DWORD, ?*DWORD, ?*DWORD) callconv(cc) BOOL;
+pub extern "kernel32" fn TerminateProcess(?HANDLE, UINT) callconv(cc) BOOL;
+pub extern "kernel32" fn SetHandleInformation(?HANDLE, DWORD, DWORD) callconv(cc) BOOL;
 
 // =============================================================================
 // Extern functions — gdi32
@@ -319,6 +402,134 @@ pub extern "winhttp" fn WinHttpCloseHandle(?*opaque {}) callconv(cc) BOOL;
 pub extern "bcrypt" fn BCryptOpenAlgorithmProvider(*?*opaque {}, [*:0]const u16, ?[*:0]const u16, DWORD) callconv(cc) i32;
 pub extern "bcrypt" fn BCryptHash(?*opaque {}, ?[*]u8, DWORD, [*]const u8, DWORD, [*]u8, DWORD) callconv(cc) i32;
 pub extern "bcrypt" fn BCryptCloseAlgorithmProvider(?*opaque {}, DWORD) callconv(cc) i32;
+
+// =============================================================================
+// Extern functions — comdlg32
+// =============================================================================
+
+pub extern "comdlg32" fn GetOpenFileNameW(*OPENFILENAMEW) callconv(cc) BOOL;
+pub extern "comdlg32" fn GetSaveFileNameW(*OPENFILENAMEW) callconv(cc) BOOL;
+
+// =============================================================================
+// Clipboard constants and functions
+// =============================================================================
+
+pub const CF_UNICODETEXT: UINT = 13;
+
+pub extern "user32" fn OpenClipboard(?HWND) callconv(cc) BOOL;
+pub extern "user32" fn CloseClipboard() callconv(cc) BOOL;
+pub extern "user32" fn EmptyClipboard() callconv(cc) BOOL;
+pub extern "user32" fn GetClipboardData(UINT) callconv(cc) ?HANDLE;
+pub extern "user32" fn SetClipboardData(UINT, ?HANDLE) callconv(cc) ?HANDLE;
+pub extern "kernel32" fn GlobalAlloc(UINT, usize) callconv(cc) ?HANDLE;
+pub extern "kernel32" fn GlobalLock(?HANDLE) callconv(cc) ?[*]u8;
+pub extern "kernel32" fn GlobalUnlock(?HANDLE) callconv(cc) BOOL;
+pub extern "kernel32" fn GlobalFree(?HANDLE) callconv(cc) ?HANDLE;
+pub const GMEM_MOVEABLE: UINT = 0x0002;
+
+// =============================================================================
+// MessageBox constants and functions
+// =============================================================================
+
+pub const MB_YESNOCANCEL: UINT = 0x00000003;
+pub const MB_ICONWARNING: UINT = 0x00000030;
+pub const IDYES: i32 = 6;
+pub const IDNO: i32 = 7;
+pub const IDCANCEL: i32 = 2;
+
+pub extern "user32" fn MessageBoxW(?HWND, [*:0]const u16, [*:0]const u16, UINT) callconv(cc) i32;
+
+// =============================================================================
+// ShowWindow constants
+// =============================================================================
+
+pub const SW_MINIMIZE: i32 = 6;
+pub const SW_MAXIMIZE: i32 = 3;
+pub const SW_RESTORE: i32 = 9;
+pub const SC_CLOSE: WPARAM = 0xF060;
+pub const SC_MINIMIZE: WPARAM = 0xF020;
+pub const SC_MAXIMIZE: WPARAM = 0xF030;
+pub const SC_RESTORE: WPARAM = 0xF120;
+pub const WM_SYSCOMMAND: UINT = 0x0112;
+
+pub extern "user32" fn IsZoomed(HWND) callconv(cc) BOOL;
+
+// =============================================================================
+// FindFirstFile / FindNextFile for directory listing
+// =============================================================================
+
+pub const WIN32_FIND_DATAW = extern struct {
+    dwFileAttributes: DWORD,
+    ftCreationTime: u64,
+    ftLastAccessTime: u64,
+    ftLastWriteTime: u64,
+    nFileSizeHigh: DWORD,
+    nFileSizeLow: DWORD,
+    dwReserved0: DWORD,
+    dwReserved1: DWORD,
+    cFileName: [260]u16,
+    cAlternateFileName: [14]u16,
+};
+
+pub const FILE_ATTRIBUTE_DIRECTORY: DWORD = 0x10;
+pub const INVALID_HANDLE: usize = @as(usize, @bitCast(@as(isize, -1)));
+
+pub extern "kernel32" fn FindFirstFileW([*:0]const u16, *WIN32_FIND_DATAW) callconv(cc) ?HANDLE;
+pub extern "kernel32" fn FindNextFileW(?HANDLE, *WIN32_FIND_DATAW) callconv(cc) BOOL;
+pub extern "kernel32" fn FindClose(?HANDLE) callconv(cc) BOOL;
+
+// =============================================================================
+// Additional window messages
+// =============================================================================
+
+pub const WM_RBUTTONDOWN: UINT = 0x0204;
+pub const WM_LBUTTONDBLCLK: UINT = 0x0203;
+pub const WM_DROPFILES: UINT = 0x0233;
+pub const WM_NCLBUTTONDBLCLK: UINT = 0x00A3;
+
+// OFN flags for Save dialog
+pub const OFN_OVERWRITEPROMPT: DWORD = 0x00000002;
+
+// =============================================================================
+// Shell drag-and-drop APIs
+// =============================================================================
+
+pub extern "shell32" fn DragAcceptFiles(HWND, BOOL) callconv(cc) void;
+pub extern "shell32" fn DragQueryFileW(?HANDLE, UINT, ?[*:0]u16, UINT) callconv(cc) UINT;
+pub extern "shell32" fn DragFinish(?HANDLE) callconv(cc) void;
+
+// =============================================================================
+// File system watcher APIs
+// =============================================================================
+
+pub extern "kernel32" fn FindFirstChangeNotificationW([*:0]const u16, BOOL, DWORD) callconv(cc) ?HANDLE;
+pub extern "kernel32" fn FindNextChangeNotification(?HANDLE) callconv(cc) BOOL;
+pub extern "kernel32" fn FindCloseChangeNotification(?HANDLE) callconv(cc) BOOL;
+pub extern "kernel32" fn ReadDirectoryChangesW(?HANDLE, [*]u8, DWORD, BOOL, DWORD, ?*DWORD, ?*anyopaque, ?*anyopaque) callconv(cc) BOOL;
+
+pub const FILE_NOTIFY_CHANGE_FILE_NAME: DWORD = 0x00000001;
+pub const FILE_NOTIFY_CHANGE_LAST_WRITE: DWORD = 0x00000010;
+
+// =============================================================================
+// Context menu APIs
+// =============================================================================
+
+pub extern "user32" fn CreatePopupMenu() callconv(cc) ?HMENU;
+pub extern "user32" fn AppendMenuW(?HMENU, UINT, usize, ?[*:0]const u16) callconv(cc) BOOL;
+pub extern "user32" fn TrackPopupMenu(?HMENU, UINT, i32, i32, i32, HWND, ?*const RECT) callconv(cc) BOOL;
+pub extern "user32" fn DestroyMenu(?HMENU) callconv(cc) BOOL;
+
+pub const HMENU = *opaque {};
+pub const MF_STRING: UINT = 0x00000000;
+pub const MF_SEPARATOR: UINT = 0x00000800;
+pub const MF_GRAYED: UINT = 0x00000001;
+pub const MF_POPUP: UINT = 0x00000010;
+pub const MF_CHECKED: UINT = 0x00000008;
+pub const TPM_RETURNCMD: UINT = 0x0100;
+pub const TPM_LEFTALIGN: UINT = 0x0000;
+pub const TPM_TOPALIGN: UINT = 0x0000;
+
+pub extern "user32" fn ClientToScreen(HWND, *POINT) callconv(cc) BOOL;
 
 // =============================================================================
 // Extern functions — opengl32 (WGL)

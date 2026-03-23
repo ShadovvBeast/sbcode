@@ -233,6 +233,15 @@ pub const FontAtlas = struct {
 
         gl.glDisable(gl.GL_TEXTURE_2D);
     }
+
+    /// Render a single glyph with a specific color (convenience wrapper).
+    pub fn renderGlyphColored(self: *const FontAtlas, codepoint: u8, x: f32, y: f32, color: Color) void {
+        gl.glEnable(gl.GL_TEXTURE_2D);
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id);
+        gl.glColor4f(color.r, color.g, color.b, color.a);
+        _ = self.renderGlyph(codepoint, x, y);
+        gl.glDisable(gl.GL_TEXTURE_2D);
+    }
 };
 
 // =============================================================================

@@ -9,6 +9,7 @@ const gl = @import("gl");
 const FontAtlas = @import("font_atlas").FontAtlas;
 const LayoutState = @import("layout").LayoutState;
 const InputState = @import("input").InputState;
+const Workbench = @import("workbench").Workbench;
 
 // =============================================================================
 // Constants
@@ -18,6 +19,7 @@ pub const DEFAULT_WIDTH: i32 = 1280;
 pub const DEFAULT_HEIGHT: i32 = 720;
 pub const CS_HREDRAW: u32 = 0x0002;
 pub const CS_VREDRAW: u32 = 0x0001;
+pub const CS_DBLCLKS: u32 = 0x0008;
 
 // =============================================================================
 // App
@@ -30,6 +32,7 @@ pub const App = struct {
     font_atlas: FontAtlas = .{},
     layout: LayoutState = .{},
     input: InputState = .{},
+    workbench: Workbench = .{},
     timer_freq: i64 = 0,
     timer_last: i64 = 0,
     delta_time: f64 = 0.0,
@@ -43,13 +46,18 @@ pub const App = struct {
     ///   - self.running is true
     ///
     /// Postconditions:
+    ///   - Per-frame input state has been reset and refilled from messages
     ///   - All pending Win32 messages have been dispatched
     ///   - self.delta_time reflects elapsed time since last tick
-    ///   - Per-frame input state has been reset via beginFrame()
     ///   - One frame has been rendered (glClear + SwapBuffers)
     ///   - self.running is set to false if WM_QUIT was received
     pub fn tick(self: *App) void {
-        // 1. Pump all pending Win32 messages
+        // 1. Reset per-frame input state BEFORE pumping messages,
+        //    so that WM_LBUTTONDOWN/WM_KEYDOWN etc. fill in fresh state
+        //    that workbench.update() will see this frame.
+        self.input.beginFrame();
+
+        // 2. Pump all pending Win32 messages
         var msg: w32.MSG = undefined;
         while (w32.PeekMessageW(&msg, null, 0, 0, w32.PM_REMOVE) != 0) {
             if (msg.message == w32.WM_QUIT) {
@@ -60,7 +68,7 @@ pub const App = struct {
             _ = w32.DispatchMessageW(&msg);
         }
 
-        // 2. Compute delta time via QueryPerformanceCounter
+        // 3. Compute delta time via QueryPerformanceCounter
         var now: w32.LARGE_INTEGER = .{ .QuadPart = 0 };
         _ = w32.QueryPerformanceCounter(&now);
         if (self.timer_freq > 0) {
@@ -68,9 +76,6 @@ pub const App = struct {
                 @as(f64, @floatFromInt(self.timer_freq));
         }
         self.timer_last = now.QuadPart;
-
-        // 3. Reset per-frame input state
-        self.input.beginFrame();
 
         // 4. Get current window dimensions for GL projection
         var rect: w32.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
@@ -92,8 +97,9 @@ pub const App = struct {
         gl.glMatrixMode(gl.GL_MODELVIEW);
         gl.glLoadIdentity();
 
-        // 6. Workbench update/render will be wired in task 19
-        // (stub — no workbench calls yet)
+        // 6. Update and render workbench
+        self.workbench.update(&self.input, &self.layout, self.delta_time);
+        self.workbench.render(&self.layout, &self.font_atlas);
 
         // 7. Swap buffers to present the frame
         _ = w32.SwapBuffers(self.hdc.?);
@@ -113,7 +119,7 @@ pub const App = struct {
         // 3. Register window class with windowProc callback
         const wc = w32.WNDCLASSEXW{
             .cbSize = @sizeOf(w32.WNDCLASSEXW),
-            .style = CS_HREDRAW | CS_VREDRAW,
+            .style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
             .lpfnWndProc = windowProc,
             .cbClsExtra = 0,
             .cbWndExtra = 0,
@@ -211,8 +217,19 @@ pub const App = struct {
 
         self.running = true;
 
+        // Register default keybindings and commands
+        self.workbench.registerDefaultKeybindings();
+        self.workbench.registerDefaultCommands();
+
         // Store global pointer so windowProc can access this App instance
         setGlobalApp(self);
+
+        // Store HWND for workbench window control operations
+        const wb_mod = @import("workbench");
+        wb_mod.setGlobalHwnd(self.hwnd.?);
+
+        // Accept drag-and-drop files
+        w32.DragAcceptFiles(self.hwnd.?, 1);
 
         return true;
     }
@@ -292,6 +309,16 @@ fn windowProc(hwnd: w32.HWND, msg: w32.UINT, wparam: w32.WPARAM, lparam: w32.LPA
             return 0;
         },
 
+        w32.WM_LBUTTONDBLCLK => {
+            // Double-click: trigger word selection
+            app.input.left_button = true;
+            app.input.left_button_pressed = true;
+            // Use the workbench's select_word at current cursor position
+            const cur = app.workbench.cursor_state.primary().active;
+            app.workbench.select_word(cur.line, cur.col);
+            return 0;
+        },
+
         w32.WM_LBUTTONUP => {
             app.input.left_button = false;
             app.input.left_button_released = true;
@@ -304,6 +331,30 @@ fn windowProc(hwnd: w32.HWND, msg: w32.UINT, wparam: w32.WPARAM, lparam: w32.LPA
             return 0;
         },
 
+        w32.WM_RBUTTONDOWN => {
+            // Right-click: trigger context menu at cursor position
+            app.input.right_button_pressed = true;
+            return 0;
+        },
+
+        w32.WM_DROPFILES => {
+            // Handle drag-and-drop files onto window
+            const hdrop: ?w32.HANDLE = @ptrFromInt(wparam);
+            var file_path: [260:0]u16 = [_:0]u16{0} ** 260;
+            const path_ptr: ?[*:0]u16 = &file_path;
+            const count = w32.DragQueryFileW(hdrop, 0, path_ptr, 260);
+            if (count > 0) {
+                app.workbench.openFile(@as([*:0]const u16, &file_path));
+            }
+            w32.DragFinish(hdrop);
+            return 0;
+        },
+
+        w32.WM_NCLBUTTONDBLCLK => {
+            // Double-click on title bar — maximize/restore handled by DefWindowProc
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
         // ----- Layout -----
         w32.WM_SIZE => {
             const width: i32 = @as(i32, loword(lparam));
@@ -314,22 +365,68 @@ fn windowProc(hwnd: w32.HWND, msg: w32.UINT, wparam: w32.WPARAM, lparam: w32.LPA
             return 0;
         },
 
-        // ----- Custom title bar drag -----
+        // ----- Custom title bar drag and resize -----
         w32.WM_NCHITTEST => {
-            // Check if the point is in the title bar region for drag support
             const x: i32 = loword(lparam);
             const y: i32 = hiword(lparam);
-            // Convert screen coords to client coords
             var pt = w32.POINT{ .x = x, .y = y };
             _ = w32.ScreenToClient(hwnd, &pt);
+
+            // Edge resize zones (6px border)
+            const border: i32 = 6;
+            var window_rect: w32.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+            _ = w32.GetClientRect(hwnd, &window_rect);
+            const w_width = window_rect.right;
+            const w_height = window_rect.bottom;
+
+            const on_left = pt.x < border;
+            const on_right = pt.x >= w_width - border;
+            const on_top = pt.y < border;
+            const on_bottom = pt.y >= w_height - border;
+
+            if (on_top and on_left) return w32.HTTOPLEFT;
+            if (on_top and on_right) return w32.HTTOPRIGHT;
+            if (on_bottom and on_left) return w32.HTBOTTOMLEFT;
+            if (on_bottom and on_right) return w32.HTBOTTOMRIGHT;
+            if (on_left) return w32.HTLEFT;
+            if (on_right) return w32.HTRIGHT;
+            if (on_top) return w32.HTTOP;
+            if (on_bottom) return w32.HTBOTTOM;
+
+            // Title bar drag zone (excluding window control buttons area on the right)
             const title_bar = app.layout.getRegion(.title_bar);
             if (title_bar.contains(pt.x, pt.y)) {
-                return w32.HTCAPTION;
+                // Reserve right 120px for close/min/max buttons
+                if (pt.x < title_bar.x + title_bar.w - 120) {
+                    return w32.HTCAPTION;
+                }
             }
             return w32.HTCLIENT;
         },
 
         // ----- Window lifecycle -----
+        w32.WM_CLOSE => {
+            // Check if buffer has unsaved changes
+            if (app.workbench.buffer.dirty) {
+                const result = w32.MessageBoxW(
+                    hwnd,
+                    w32.L("Do you want to save changes before closing?"),
+                    w32.L("SBCode"),
+                    w32.MB_YESNOCANCEL | w32.MB_ICONWARNING,
+                );
+                if (result == w32.IDYES) {
+                    app.workbench.saveCurrentFile();
+                    _ = w32.DestroyWindow(hwnd);
+                } else if (result == w32.IDNO) {
+                    _ = w32.DestroyWindow(hwnd);
+                }
+                // IDCANCEL: do nothing, don't close
+                return 0;
+            }
+            _ = w32.DestroyWindow(hwnd);
+            return 0;
+        },
+
         w32.WM_DESTROY => {
             w32.PostQuitMessage(0);
             return 0;
