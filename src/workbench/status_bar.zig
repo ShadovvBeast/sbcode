@@ -35,6 +35,15 @@ const MAX_NOTIFICATION_LEN: usize = 128;
 /// Maximum branch name length.
 const MAX_BRANCH_LEN: usize = 32;
 
+/// Maximum number of extension status items.
+const MAX_EXT_STATUS_ITEMS: usize = 16;
+
+/// A fixed-size label entry for extension status items.
+const StatusLabel = struct {
+    buf: [48]u8 = [_]u8{0} ** 48,
+    len: u8 = 0,
+};
+
 // =============================================================================
 // StatusBar
 // =============================================================================
@@ -52,6 +61,37 @@ pub const StatusBar = struct {
     warning_count: u16 = 0,
     tab_size: u8 = 4,
     use_spaces: bool = true,
+
+    // Extension-contributed status items (populated at init from manifest)
+    ext_status_labels: [MAX_EXT_STATUS_ITEMS]StatusLabel = [_]StatusLabel{.{}} ** MAX_EXT_STATUS_ITEMS,
+    ext_status_command_ids: [MAX_EXT_STATUS_ITEMS]u16 = [_]u16{0} ** MAX_EXT_STATUS_ITEMS,
+    ext_status_left_count: u8 = 0,
+    ext_status_right_count: u8 = 0,
+
+    // Theme-overridable background color
+    bg_color: Color = STATUS_BAR_BG,
+
+    /// Register an extension status item (left-aligned).
+    pub fn addExtStatusLeft(self: *StatusBar, label: []const u8, command_id: u16) void {
+        const idx = self.ext_status_left_count;
+        if (idx >= MAX_EXT_STATUS_ITEMS) return;
+        const copy_len = @min(label.len, 48);
+        @memcpy(self.ext_status_labels[idx].buf[0..copy_len], label[0..copy_len]);
+        self.ext_status_labels[idx].len = @intCast(copy_len);
+        self.ext_status_command_ids[idx] = command_id;
+        self.ext_status_left_count += 1;
+    }
+
+    /// Register an extension status item (right-aligned).
+    pub fn addExtStatusRight(self: *StatusBar, label: []const u8, command_id: u16) void {
+        const idx = self.ext_status_left_count + self.ext_status_right_count;
+        if (idx >= MAX_EXT_STATUS_ITEMS) return;
+        const copy_len = @min(label.len, 48);
+        @memcpy(self.ext_status_labels[idx].buf[0..copy_len], label[0..copy_len]);
+        self.ext_status_labels[idx].len = @intCast(copy_len);
+        self.ext_status_command_ids[idx] = command_id;
+        self.ext_status_right_count += 1;
+    }
 
     /// Set the language mode label.
     pub fn setLanguageMode(self: *StatusBar, mode: []const u8) void {
@@ -110,11 +150,11 @@ pub const StatusBar = struct {
     /// Render the status bar into the given region.
     ///
     /// VS Code layout (left to right):
-    ///   Left:  [branch] [errors] [warnings]
-    ///   Right: [Ln X, Col Y] [Spaces: N] [UTF-8] [language] [bell]
+    ///   Left:  [branch] [errors] [warnings] [ext left items...]
+    ///   Right: [Ln X, Col Y] [Spaces: N] [UTF-8] [language] [ext right items...] [bell]
     pub fn render(self: *const StatusBar, region: Rect, font_atlas: *const FontAtlas) void {
-        // Draw background
-        renderQuad(region, STATUS_BAR_BG);
+        // Draw background (uses theme-overridable color)
+        renderQuad(region, self.bg_color);
 
         if (region.w <= 0 or region.h <= 0) return;
 
@@ -166,6 +206,15 @@ pub const StatusBar = struct {
         warn_len += 1;
         warn_len += writeU32(warn_buf[warn_len..], self.warning_count);
         font_atlas.renderText(warn_buf[0..warn_len], @floatFromInt(left_x), @floatFromInt(text_y), TEXT_COLOR);
+        left_x += @as(i32, @intCast(warn_len)) * cell_w + pad_x;
+
+        // Extension-contributed left-aligned status items
+        for (self.ext_status_labels[0..self.ext_status_left_count]) |label_entry| {
+            if (label_entry.len == 0) continue;
+            const lbl = label_entry.buf[0..label_entry.len];
+            font_atlas.renderText(lbl, @floatFromInt(left_x), @floatFromInt(text_y), TEXT_COLOR);
+            left_x += @as(i32, @intCast(label_entry.len)) * cell_w + pad_x;
+        }
 
         // ---- RIGHT SIDE (rendered right-to-left) ----
         var right_x = region.x + region.w - pad_x;
@@ -174,6 +223,18 @@ pub const StatusBar = struct {
         right_x -= cell_w;
         font_atlas.renderText("o", @floatFromInt(right_x), @floatFromInt(text_y), TEXT_COLOR);
         right_x -= pad_x;
+
+        // Extension-contributed right-aligned status items
+        var ri: u8 = 0;
+        while (ri < self.ext_status_right_count) : (ri += 1) {
+            const label_entry = self.ext_status_labels[self.ext_status_left_count + ri];
+            if (label_entry.len == 0) continue;
+            const lbl = label_entry.buf[0..label_entry.len];
+            const item_w = @as(i32, @intCast(label_entry.len)) * cell_w;
+            right_x -= item_w;
+            font_atlas.renderText(lbl, @floatFromInt(right_x), @floatFromInt(text_y), TEXT_COLOR);
+            right_x -= pad_x;
+        }
 
         // Language mode
         if (self.language_mode_len > 0) {

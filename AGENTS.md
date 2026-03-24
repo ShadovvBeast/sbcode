@@ -1,11 +1,11 @@
-# SBCode Agents Instructions
+# SBCode Agents Instructions
 
 This file provides instructions for AI coding agents working with the SBCode codebase.
 
 ## Project Overview
 
 SBCode is a native code editor written in pure Zig targeting Win32 + OpenGL 1.x. Single binary, zero dependencies, zero heap allocations.
-
+ 
 ## Architecture
 
 Layered module design — each layer depends only on layers below it:

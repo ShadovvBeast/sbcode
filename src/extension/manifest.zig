@@ -55,6 +55,48 @@ const razor_lang = @import("ext_razor_lang");
 const rst_lang = @import("ext_rst_lang");
 const shaderlab_lang = @import("ext_shaderlab_lang");
 const vb_lang = @import("ext_vb_lang");
+const theme_abyss = @import("ext_theme_abyss");
+const theme_defaults = @import("ext_theme_defaults");
+const theme_kimbie_dark = @import("ext_theme_kimbie_dark");
+const theme_monokai = @import("ext_theme_monokai");
+const theme_monokai_dimmed = @import("ext_theme_monokai_dimmed");
+const theme_quietlight = @import("ext_theme_quietlight");
+const theme_red = @import("ext_theme_red");
+const theme_seti = @import("ext_theme_seti");
+const theme_solarized_dark = @import("ext_theme_solarized_dark");
+const theme_solarized_light = @import("ext_theme_solarized_light");
+const theme_tomorrow_night_blue = @import("ext_theme_tomorrow_night_blue");
+const emmet = @import("ext_emmet");
+const git_ext = @import("ext_git_ext");
+const merge_conflict = @import("ext_merge_conflict");
+const references_view = @import("ext_references_view");
+const search_result = @import("ext_search_result");
+const npm_ext = @import("ext_npm_ext");
+const configuration_editing = @import("ext_configuration_editing");
+const media_preview = @import("ext_media_preview");
+const markdown_features = @import("ext_markdown_features");
+const html_features = @import("ext_html_features");
+const css_features = @import("ext_css_features");
+const json_features = @import("ext_json_features");
+const php_features = @import("ext_php_features");
+const typescript_features = @import("ext_typescript_features");
+const git_base = @import("ext_git_base");
+const github_ext = @import("ext_github_ext");
+const github_auth = @import("ext_github_auth");
+const microsoft_auth = @import("ext_microsoft_auth");
+const debug_auto_launch = @import("ext_debug_auto_launch");
+const debug_server_ready = @import("ext_debug_server_ready");
+const extension_editing = @import("ext_extension_editing");
+const grunt_ext = @import("ext_grunt_ext");
+const gulp_ext = @import("ext_gulp_ext");
+const jake_ext = @import("ext_jake_ext");
+const ipynb = @import("ext_ipynb");
+const markdown_math = @import("ext_markdown_math");
+const notebook_renderers = @import("ext_notebook_renderers");
+const simple_browser = @import("ext_simple_browser");
+const terminal_suggest = @import("ext_terminal_suggest");
+const tunnel_forwarding = @import("ext_tunnel_forwarding");
+const siro_agent = @import("ext_siro_agent");
 
 /// Master list of all compiled-in extensions.
 pub const extensions = [_]ext.Extension{
@@ -107,6 +149,48 @@ pub const extensions = [_]ext.Extension{
     rst_lang.extension,
     shaderlab_lang.extension,
     vb_lang.extension,
+    theme_abyss.extension,
+    theme_defaults.extension,
+    theme_kimbie_dark.extension,
+    theme_monokai.extension,
+    theme_monokai_dimmed.extension,
+    theme_quietlight.extension,
+    theme_red.extension,
+    theme_seti.extension,
+    theme_solarized_dark.extension,
+    theme_solarized_light.extension,
+    theme_tomorrow_night_blue.extension,
+    emmet.extension,
+    git_ext.extension,
+    merge_conflict.extension,
+    references_view.extension,
+    search_result.extension,
+    npm_ext.extension,
+    configuration_editing.extension,
+    media_preview.extension,
+    markdown_features.extension,
+    html_features.extension,
+    css_features.extension,
+    json_features.extension,
+    php_features.extension,
+    typescript_features.extension,
+    git_base.extension,
+    github_ext.extension,
+    github_auth.extension,
+    microsoft_auth.extension,
+    debug_auto_launch.extension,
+    debug_server_ready.extension,
+    extension_editing.extension,
+    grunt_ext.extension,
+    gulp_ext.extension,
+    jake_ext.extension,
+    ipynb.extension,
+    markdown_math.extension,
+    notebook_renderers.extension,
+    simple_browser.extension,
+    terminal_suggest.extension,
+    tunnel_forwarding.extension,
+    siro_agent.extension,
 };
 
 /// Total number of extensions.
@@ -140,7 +224,7 @@ const testing = @import("std").testing;
 const expect = testing.expect;
 
 test "manifest has all extensions registered" {
-    try expect(count == 49);
+    try expect(count == 91);
 }
 
 test "manifest detectLanguage routes to zig extension" {
