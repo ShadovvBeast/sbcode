@@ -347,19 +347,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "win32", .module = win32_mod },
         },
     });
-    const sidebar_mod = b.createModule(.{
-        .root_source_file = b.path("src/workbench/sidebar.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "gl", .module = gl_mod },
-            .{ .name = "font_atlas", .module = font_atlas_mod },
-            .{ .name = "color", .module = color_mod },
-            .{ .name = "rect", .module = rect_mod },
-            .{ .name = "file_tree", .module = file_tree_mod },
-            .{ .name = "file_icons", .module = file_icons_mod },
-        },
-    });
     const panel_mod = b.createModule(.{
         .root_source_file = b.path("src/workbench/panel.zig"),
         .target = target,
@@ -845,6 +832,360 @@ pub fn build(b: *std.Build) void {
             .{ .name = "syntax", .module = syntax_mod },
         },
     });
+    // -- Theme extensions --
+    const ext_theme_abyss_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/theme_abyss.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
+    const ext_theme_defaults_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/theme_defaults.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
+    const ext_theme_kimbie_dark_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/theme_kimbie_dark.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
+    const ext_theme_monokai_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/theme_monokai.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
+    const ext_theme_monokai_dimmed_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/theme_monokai_dimmed.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
+    const ext_theme_quietlight_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/theme_quietlight.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
+    const ext_theme_red_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/theme_red.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
+    const ext_theme_seti_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/theme_seti.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
+    const ext_theme_solarized_dark_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/theme_solarized_dark.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
+    const ext_theme_solarized_light_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/theme_solarized_light.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
+    const ext_theme_tomorrow_night_blue_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/theme_tomorrow_night_blue.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "color", .module = color_mod },
+        },
+    });
+    // -- Feature extensions (non-language) --
+    const ext_emmet_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/emmet.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_git_ext_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/git_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_merge_conflict_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/merge_conflict.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_references_view_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/references_view.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_search_result_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/search_result.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_npm_ext_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/npm_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_configuration_editing_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/configuration_editing.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_media_preview_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/media_preview.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_markdown_features_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/markdown_features.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_html_features_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/html_features.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    // -- Batch 2 feature extensions --
+    const ext_css_features_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/css_features.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_json_features_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/json_features.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_php_features_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/php_features.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_typescript_features_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/typescript_features.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_git_base_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/git_base.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_github_ext_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/github_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_github_auth_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/github_auth.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_microsoft_auth_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/microsoft_auth.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_debug_auto_launch_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/debug_auto_launch.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_debug_server_ready_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/debug_server_ready.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_extension_editing_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/extension_editing.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_grunt_ext_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/grunt_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_gulp_ext_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/gulp_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_jake_ext_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/jake_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_ipynb_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/ipynb.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_markdown_math_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/markdown_math.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const ext_notebook_renderers_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/notebook_renderers.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_simple_browser_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/simple_browser.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_terminal_suggest_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/terminal_suggest.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_tunnel_forwarding_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/tunnel_forwarding.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
+    const ext_siro_agent_mod = b.createModule(.{
+        .root_source_file = b.path("src/extensions/siro_agent.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "extension", .module = extension_mod },
+        },
+    });
     const manifest_mod = b.createModule(.{
         .root_source_file = b.path("src/extension/manifest.zig"),
         .target = target,
@@ -900,7 +1241,64 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ext_rst_lang", .module = ext_rst_lang_mod },
             .{ .name = "ext_shaderlab_lang", .module = ext_shaderlab_lang_mod },
             .{ .name = "ext_vb_lang", .module = ext_vb_lang_mod },
+            .{ .name = "ext_theme_abyss", .module = ext_theme_abyss_mod },
+            .{ .name = "ext_theme_defaults", .module = ext_theme_defaults_mod },
+            .{ .name = "ext_theme_kimbie_dark", .module = ext_theme_kimbie_dark_mod },
+            .{ .name = "ext_theme_monokai", .module = ext_theme_monokai_mod },
+            .{ .name = "ext_theme_monokai_dimmed", .module = ext_theme_monokai_dimmed_mod },
+            .{ .name = "ext_theme_quietlight", .module = ext_theme_quietlight_mod },
+            .{ .name = "ext_theme_red", .module = ext_theme_red_mod },
+            .{ .name = "ext_theme_seti", .module = ext_theme_seti_mod },
+            .{ .name = "ext_theme_solarized_dark", .module = ext_theme_solarized_dark_mod },
+            .{ .name = "ext_theme_solarized_light", .module = ext_theme_solarized_light_mod },
+            .{ .name = "ext_theme_tomorrow_night_blue", .module = ext_theme_tomorrow_night_blue_mod },
+            .{ .name = "ext_emmet", .module = ext_emmet_mod },
+            .{ .name = "ext_git_ext", .module = ext_git_ext_mod },
+            .{ .name = "ext_merge_conflict", .module = ext_merge_conflict_mod },
+            .{ .name = "ext_references_view", .module = ext_references_view_mod },
+            .{ .name = "ext_search_result", .module = ext_search_result_mod },
+            .{ .name = "ext_npm_ext", .module = ext_npm_ext_mod },
+            .{ .name = "ext_configuration_editing", .module = ext_configuration_editing_mod },
+            .{ .name = "ext_media_preview", .module = ext_media_preview_mod },
+            .{ .name = "ext_markdown_features", .module = ext_markdown_features_mod },
+            .{ .name = "ext_html_features", .module = ext_html_features_mod },
+            .{ .name = "ext_css_features", .module = ext_css_features_mod },
+            .{ .name = "ext_json_features", .module = ext_json_features_mod },
+            .{ .name = "ext_php_features", .module = ext_php_features_mod },
+            .{ .name = "ext_typescript_features", .module = ext_typescript_features_mod },
+            .{ .name = "ext_git_base", .module = ext_git_base_mod },
+            .{ .name = "ext_github_ext", .module = ext_github_ext_mod },
+            .{ .name = "ext_github_auth", .module = ext_github_auth_mod },
+            .{ .name = "ext_microsoft_auth", .module = ext_microsoft_auth_mod },
+            .{ .name = "ext_debug_auto_launch", .module = ext_debug_auto_launch_mod },
+            .{ .name = "ext_debug_server_ready", .module = ext_debug_server_ready_mod },
+            .{ .name = "ext_extension_editing", .module = ext_extension_editing_mod },
+            .{ .name = "ext_grunt_ext", .module = ext_grunt_ext_mod },
+            .{ .name = "ext_gulp_ext", .module = ext_gulp_ext_mod },
+            .{ .name = "ext_jake_ext", .module = ext_jake_ext_mod },
+            .{ .name = "ext_ipynb", .module = ext_ipynb_mod },
+            .{ .name = "ext_markdown_math", .module = ext_markdown_math_mod },
+            .{ .name = "ext_notebook_renderers", .module = ext_notebook_renderers_mod },
+            .{ .name = "ext_simple_browser", .module = ext_simple_browser_mod },
+            .{ .name = "ext_terminal_suggest", .module = ext_terminal_suggest_mod },
+            .{ .name = "ext_tunnel_forwarding", .module = ext_tunnel_forwarding_mod },
+            .{ .name = "ext_siro_agent", .module = ext_siro_agent_mod },
             .{ .name = "syntax", .module = syntax_mod },
+        },
+    });
+    const sidebar_mod = b.createModule(.{
+        .root_source_file = b.path("src/workbench/sidebar.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "gl", .module = gl_mod },
+            .{ .name = "font_atlas", .module = font_atlas_mod },
+            .{ .name = "color", .module = color_mod },
+            .{ .name = "rect", .module = rect_mod },
+            .{ .name = "file_tree", .module = file_tree_mod },
+            .{ .name = "file_icons", .module = file_icons_mod },
+            .{ .name = "manifest", .module = manifest_mod },
+            .{ .name = "extension", .module = extension_mod },
         },
     });
     const workbench_mod = b.createModule(.{
@@ -1095,6 +1493,48 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "ext_rst_lang", .module = ext_rst_lang_mod },
                 .{ .name = "ext_shaderlab_lang", .module = ext_shaderlab_lang_mod },
                 .{ .name = "ext_vb_lang", .module = ext_vb_lang_mod },
+                .{ .name = "ext_theme_abyss", .module = ext_theme_abyss_mod },
+                .{ .name = "ext_theme_defaults", .module = ext_theme_defaults_mod },
+                .{ .name = "ext_theme_kimbie_dark", .module = ext_theme_kimbie_dark_mod },
+                .{ .name = "ext_theme_monokai", .module = ext_theme_monokai_mod },
+                .{ .name = "ext_theme_monokai_dimmed", .module = ext_theme_monokai_dimmed_mod },
+                .{ .name = "ext_theme_quietlight", .module = ext_theme_quietlight_mod },
+                .{ .name = "ext_theme_red", .module = ext_theme_red_mod },
+                .{ .name = "ext_theme_seti", .module = ext_theme_seti_mod },
+                .{ .name = "ext_theme_solarized_dark", .module = ext_theme_solarized_dark_mod },
+                .{ .name = "ext_theme_solarized_light", .module = ext_theme_solarized_light_mod },
+                .{ .name = "ext_theme_tomorrow_night_blue", .module = ext_theme_tomorrow_night_blue_mod },
+                .{ .name = "ext_emmet", .module = ext_emmet_mod },
+                .{ .name = "ext_git_ext", .module = ext_git_ext_mod },
+                .{ .name = "ext_merge_conflict", .module = ext_merge_conflict_mod },
+                .{ .name = "ext_references_view", .module = ext_references_view_mod },
+                .{ .name = "ext_search_result", .module = ext_search_result_mod },
+                .{ .name = "ext_npm_ext", .module = ext_npm_ext_mod },
+                .{ .name = "ext_configuration_editing", .module = ext_configuration_editing_mod },
+                .{ .name = "ext_media_preview", .module = ext_media_preview_mod },
+                .{ .name = "ext_markdown_features", .module = ext_markdown_features_mod },
+                .{ .name = "ext_html_features", .module = ext_html_features_mod },
+                .{ .name = "ext_css_features", .module = ext_css_features_mod },
+                .{ .name = "ext_json_features", .module = ext_json_features_mod },
+                .{ .name = "ext_php_features", .module = ext_php_features_mod },
+                .{ .name = "ext_typescript_features", .module = ext_typescript_features_mod },
+                .{ .name = "ext_git_base", .module = ext_git_base_mod },
+                .{ .name = "ext_github_ext", .module = ext_github_ext_mod },
+                .{ .name = "ext_github_auth", .module = ext_github_auth_mod },
+                .{ .name = "ext_microsoft_auth", .module = ext_microsoft_auth_mod },
+                .{ .name = "ext_debug_auto_launch", .module = ext_debug_auto_launch_mod },
+                .{ .name = "ext_debug_server_ready", .module = ext_debug_server_ready_mod },
+                .{ .name = "ext_extension_editing", .module = ext_extension_editing_mod },
+                .{ .name = "ext_grunt_ext", .module = ext_grunt_ext_mod },
+                .{ .name = "ext_gulp_ext", .module = ext_gulp_ext_mod },
+                .{ .name = "ext_jake_ext", .module = ext_jake_ext_mod },
+                .{ .name = "ext_ipynb", .module = ext_ipynb_mod },
+                .{ .name = "ext_markdown_math", .module = ext_markdown_math_mod },
+                .{ .name = "ext_notebook_renderers", .module = ext_notebook_renderers_mod },
+                .{ .name = "ext_simple_browser", .module = ext_simple_browser_mod },
+                .{ .name = "ext_terminal_suggest", .module = ext_terminal_suggest_mod },
+                .{ .name = "ext_tunnel_forwarding", .module = ext_tunnel_forwarding_mod },
+                .{ .name = "ext_siro_agent", .module = ext_siro_agent_mod },
                 .{ .name = "manifest", .module = manifest_mod },
                 .{ .name = "file_icons", .module = file_icons_mod },
             },
