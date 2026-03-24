@@ -30,6 +30,8 @@ const context_menu = @import("context_menu");
 const file_picker_mod = @import("file_picker");
 const FilePicker = file_picker_mod.FilePicker;
 const ft = @import("file_tree");
+const file_icons = @import("file_icons");
+const FileIconCache = file_icons.FileIconCache;
 const manifest = @import("manifest");
 const ext_api = @import("extension");
 
@@ -162,6 +164,16 @@ pub const Tab = struct {
 };
 
 // =============================================================================
+// Focus tracking — determines which view receives keyboard input
+// =============================================================================
+
+pub const FocusedView = enum(u8) {
+    editor,
+    sidebar,
+    panel,
+};
+
+// =============================================================================
 // Workbench
 // =============================================================================
 
@@ -177,6 +189,10 @@ pub const Workbench = struct {
     activity_bar: ActivityBar = .{},
     sidebar: Sidebar = .{},
     panel: Panel = .{},
+    file_icon_cache: FileIconCache = .{},
+
+    // Which view currently has keyboard focus
+    active_focus: FocusedView = .editor,
 
     // Tab state
     tabs: [MAX_TABS]Tab = [_]Tab{.{}} ** MAX_TABS,
@@ -201,9 +217,14 @@ pub const Workbench = struct {
     // Scroll state
     scroll_top: u32 = 0,
 
-    // Cursor blink timer (seconds)
+    // Cursor blink timer (continuous phase, seconds)
     blink_timer: f64 = 0.0,
     cursor_visible: bool = true,
+
+    // Animated cursor: previous position for smooth movement lerp
+    prev_cursor_line: u32 = 0,
+    prev_cursor_col: u32 = 0,
+    cursor_anim_t: f32 = 1.0, // 0.0 = at old pos, 1.0 = at new pos
 
     // Find/Replace overlay state
     find_visible: bool = false,
@@ -217,6 +238,10 @@ pub const Workbench = struct {
     last_click_time: f64 = 0.0,
     click_count: u8 = 0,
     accumulated_time: f64 = 0.0,
+
+    // Mouse drag selection state
+    drag_selecting: bool = false,
+    drag_anchor: Position = .{ .line = 0, .col = 0 },
 
     // Autocomplete state
     autocomplete_visible: bool = false,
@@ -299,6 +324,7 @@ pub const Workbench = struct {
     // Color theme support
     color_theme: [64]u8 = undefined,
     color_theme_len: u8 = 0,
+    active_theme_index: u8 = 0, // index into comptime theme list (0 = default)
 
     // Confirm dialog state (GL-rendered, replaces Win32 MessageBox)
     confirm_dialog_visible: bool = false,
@@ -306,9 +332,51 @@ pub const Workbench = struct {
     confirm_dialog_anim: f32 = 0.0, // fade-in animation
     confirm_dialog_action: u8 = 0, // 0=close window, 1=close tab
 
+    // Delete confirmation dialog state
+    delete_dialog_visible: bool = false,
+    delete_dialog_selected: u8 = 0, // 0=Delete, 1=Cancel
+    delete_dialog_anim: f32 = 0.0, // fade-in animation
+    delete_dialog_target_idx: u8 = 0, // sidebar entry index to delete
+    delete_dialog_is_dir: bool = false, // whether target is a directory
+    delete_dialog_name: [64]u8 = undefined, // name of file/folder
+    delete_dialog_name_len: u8 = 0,
+
     // Window control button hover state: 0=none, 1=minimize, 2=maximize, 3=close
     wc_hover: u8 = 0,
     wc_hover_anim: [3]f32 = [_]f32{0.0} ** 3, // smooth hover fade per button
+
+    /// Get the active theme colors. Returns the theme contributed by extensions
+    /// at the current active_theme_index, or the default ThemeColors if no
+    /// extension themes are registered or index is out of range.
+    pub fn getThemeColors(self: *const Workbench) ext_api.ThemeColors {
+        const themes = comptime collectAllThemes();
+        if (themes.len == 0) return .{};
+        const idx = if (self.active_theme_index < themes.len) self.active_theme_index else 0;
+        return themes[idx].colors;
+    }
+
+    /// Get the name of the currently active theme.
+    pub fn getActiveThemeName(self: *const Workbench) []const u8 {
+        const themes = comptime collectAllThemes();
+        if (themes.len == 0) return "Default Dark+";
+        const idx = if (self.active_theme_index < themes.len) self.active_theme_index else 0;
+        return themes[idx].name;
+    }
+
+    /// Cycle to the next available theme.
+    pub fn cycleTheme(self: *Workbench) void {
+        const theme_count = comptime countAllThemes();
+        if (theme_count == 0) return;
+        self.active_theme_index = (self.active_theme_index + 1) % theme_count;
+        // Update the color_theme display name
+        const name = self.getActiveThemeName();
+        const copy_len = @min(name.len, 64);
+        @memcpy(self.color_theme[0..copy_len], name[0..copy_len]);
+        self.color_theme_len = @intCast(copy_len);
+        // Update status bar background from theme
+        const theme = self.getThemeColors();
+        self.status_bar.bg_color = theme.status_bar_bg;
+    }
 
     /// Show the unsaved changes confirmation dialog.
     /// action: 0 = close window, 1 = close tab
@@ -355,15 +423,60 @@ pub const Workbench = struct {
         }
     }
 
+    /// Show the delete confirmation dialog for the currently selected sidebar entry.
+    pub fn showDeleteDialog(self: *Workbench) void {
+        if (self.sidebar.selected_row < 0 or self.sidebar.selected_row >= self.sidebar.entry_count) return;
+        const idx: u8 = @intCast(self.sidebar.selected_row);
+        self.delete_dialog_visible = true;
+        self.delete_dialog_selected = 1; // default to Cancel (safe)
+        self.delete_dialog_anim = 0.0;
+        self.delete_dialog_target_idx = idx;
+        self.delete_dialog_is_dir = self.sidebar.is_dir[idx];
+        const name_len = self.sidebar.entry_lens[idx];
+        @memcpy(self.delete_dialog_name[0..name_len], self.sidebar.entries[idx][0..name_len]);
+        self.delete_dialog_name_len = name_len;
+    }
+
+    /// Handle the delete dialog result. 0=Delete, 1=Cancel.
+    pub fn handleDeleteResult(self: *Workbench, choice: u8) void {
+        self.delete_dialog_visible = false;
+        self.delete_dialog_anim = 0.0;
+        if (choice == 0) {
+            // Perform the actual deletion
+            const idx = self.delete_dialog_target_idx;
+            if (idx >= self.sidebar.entry_count) return;
+            const path = self.sidebar.getEntryPath(idx) orelse return;
+            const ok = if (self.sidebar.is_dir[idx])
+                file_service.removeDirectory(path)
+            else
+                file_service.deleteFile(path);
+            if (ok) {
+                self.sidebarRemoveEntry(idx);
+                self.status_bar.setNotification("Deleted");
+            } else {
+                self.status_bar.setNotification("Delete failed");
+            }
+        }
+    }
+
     /// Register default keybindings (e.g., Ctrl+O for file open).
+    /// Also registers keybindings contributed by all compiled-in extensions.
     ///
     /// Postconditions:
     ///   - Ctrl+O is registered as CMD_OPEN_FILE
+    ///   - All extension-contributed keybindings are registered
     pub fn registerDefaultKeybindings(self: *Workbench) void {
         _ = self.keybindings.register(VK_O, true, false, false, CMD_OPEN_FILE);
         _ = self.keybindings.register(VK_S, true, false, false, CMD_SAVE_FILE);
         _ = self.keybindings.register(VK_B, true, false, false, CMD_TOGGLE_SIDEBAR);
         _ = self.keybindings.register(VK_J, true, false, false, CMD_TOGGLE_PANEL);
+
+        // Register keybindings from all extensions
+        inline for (manifest.extensions) |extension| {
+            for (extension.keybindings) |kb| {
+                _ = self.keybindings.register(kb.key_code, kb.ctrl, kb.shift, kb.alt, kb.command_id);
+            }
+        }
     }
 
     /// Open a file given a UTF-16 null-terminated path (from Win32 file dialog).
@@ -449,6 +562,7 @@ pub const Workbench = struct {
 
     /// Register all system commands in the command palette.
     /// Populates the palette with every action from all menus plus extension commands.
+    /// Also registers extension-contributed status bar items.
     pub fn registerDefaultCommands(self: *Workbench) void {
         const command_palette_mod = @import("command_palette");
         command_palette_mod.registerAllActions(&self.command_palette);
@@ -457,6 +571,21 @@ pub const Workbench = struct {
         inline for (manifest.extensions) |extension| {
             for (extension.commands) |cmd| {
                 self.command_palette.reg(cmd.id, cmd.label, cmd.shortcut, @enumFromInt(@intFromEnum(cmd.category)));
+            }
+        }
+
+        // Register extension-contributed status bar items
+        self.registerExtensionStatusItems();
+    }
+
+    /// Populate the status bar with status items contributed by extensions.
+    fn registerExtensionStatusItems(self: *Workbench) void {
+        const items = comptime collectAllStatusItems();
+        inline for (items) |item| {
+            if (item.alignment == .left) {
+                self.status_bar.addExtStatusLeft(item.label, item.command_id);
+            } else {
+                self.status_bar.addExtStatusRight(item.label, item.command_id);
             }
         }
     }
@@ -479,9 +608,19 @@ pub const Workbench = struct {
             },
             CMD_TOGGLE_SIDEBAR => {
                 self.sidebar_visible = !self.sidebar_visible;
+                if (self.sidebar_visible) {
+                    self.active_focus = .sidebar;
+                } else {
+                    self.active_focus = .editor;
+                }
             },
             CMD_TOGGLE_PANEL => {
                 self.panel_visible = !self.panel_visible;
+                if (self.panel_visible) {
+                    self.active_focus = .panel;
+                } else {
+                    self.active_focus = .editor;
+                }
             },
             CMD_NEW_FILE => {
                 self.handleNewFile();
@@ -498,6 +637,7 @@ pub const Workbench = struct {
             CMD_SEARCH_FILES => {
                 self.sidebar_visible = true;
                 self.activity_bar.active_icon = 1;
+                self.active_focus = .sidebar;
             },
             else => {
                 // IDs >= 100 are dispatched through the unified menu command system
@@ -568,11 +708,18 @@ pub const Workbench = struct {
         layout.panel_visible = self.panel_visible;
         layout.recompute(layout.window_w, layout.window_h);
 
-        // Update cursor blink timer
+        // Update cursor blink timer (continuous — wraps every full cycle)
         self.blink_timer += delta_time;
-        if (self.blink_timer >= 0.5) {
-            self.blink_timer -= 0.5;
-            self.cursor_visible = !self.cursor_visible;
+        const blink_period = viewport.CURSOR_BLINK_INTERVAL * 2.0; // full on+off cycle
+        if (self.blink_timer >= blink_period) {
+            self.blink_timer -= blink_period;
+        }
+        // Derive boolean for command palette / file picker cursors
+        self.cursor_visible = self.blink_timer < viewport.CURSOR_BLINK_INTERVAL;
+
+        // Advance cursor movement animation
+        if (self.cursor_anim_t < 1.0) {
+            self.cursor_anim_t = @min(1.0, self.cursor_anim_t + @as(f32, @floatCast(delta_time)) * 12.0);
         }
 
         // Animate dropdown menu (smooth open)
@@ -583,6 +730,11 @@ pub const Workbench = struct {
         // Animate confirm dialog (fade-in)
         if (self.confirm_dialog_visible and self.confirm_dialog_anim < 1.0) {
             self.confirm_dialog_anim = @min(1.0, self.confirm_dialog_anim + @as(f32, @floatCast(delta_time)) * 6.0);
+        }
+
+        // Animate delete dialog (fade-in)
+        if (self.delete_dialog_visible and self.delete_dialog_anim < 1.0) {
+            self.delete_dialog_anim = @min(1.0, self.delete_dialog_anim + @as(f32, @floatCast(delta_time)) * 6.0);
         }
 
         // Animate file picker (slide-down + fade-in)
@@ -666,6 +818,26 @@ pub const Workbench = struct {
                     self.confirm_dialog_selected = (self.confirm_dialog_selected + 1) % 3;
                 } else if (ev.vk == VK_LEFT) {
                     self.confirm_dialog_selected = if (self.confirm_dialog_selected == 0) 2 else self.confirm_dialog_selected - 1;
+                }
+            }
+            return; // Block all other input
+        }
+
+        // When delete dialog is visible, it blocks all other input
+        if (self.delete_dialog_visible) {
+            if (input.left_button_pressed) {
+                self.handleDeleteDialogClick(input.mouse_x, input.mouse_y, layout);
+            }
+            var ki: u32 = 0;
+            while (ki < input.key_event_count) : (ki += 1) {
+                const ev = input.key_events[ki];
+                if (!ev.pressed) continue;
+                if (ev.vk == VK_ESCAPE) {
+                    self.handleDeleteResult(1); // Cancel
+                } else if (ev.vk == VK_RETURN) {
+                    self.handleDeleteResult(self.delete_dialog_selected);
+                } else if (ev.vk == VK_TAB or ev.vk == VK_RIGHT or ev.vk == VK_LEFT) {
+                    self.delete_dialog_selected = 1 - self.delete_dialog_selected; // toggle 0/1
                 }
             }
             return; // Block all other input
@@ -769,6 +941,46 @@ pub const Workbench = struct {
             self.handleAllClicks(input, layout);
         }
 
+        // Mouse drag selection: while left button held, extend selection
+        if (self.drag_selecting) {
+            if (input.left_button and !input.left_button_pressed) {
+                // Button still held (not the initial press frame) — update selection
+                const editor_area = layout.getRegion(.editor_area);
+                if (editor_area.w > 0 and editor_area.h > 0) {
+                    const cw = self.cell_w;
+                    const ch = self.cell_h;
+                    if (cw > 0 and ch > 0) {
+                        const gutter_px = @as(i32, @intCast(viewport.GUTTER_CHAR_WIDTH)) * cw;
+                        const rel_x = input.mouse_x - editor_area.x - gutter_px;
+                        const rel_y = input.mouse_y - editor_area.y;
+                        const drag_line = if (rel_y >= 0)
+                            self.scroll_top + @as(u32, @intCast(@divTrunc(rel_y, ch)))
+                        else
+                            self.scroll_top;
+                        const drag_col: u32 = if (rel_x > 0) @intCast(@divTrunc(rel_x, cw)) else 0;
+
+                        // Clamp to buffer bounds
+                        var line = drag_line;
+                        if (self.buffer.line_count > 0 and line >= self.buffer.line_count) {
+                            line = self.buffer.line_count - 1;
+                        }
+                        var col = drag_col;
+                        if (self.buffer.getLine(line)) |l| {
+                            if (col > @as(u32, @intCast(l.len))) {
+                                col = @intCast(l.len);
+                            }
+                        }
+
+                        const drag_pos = Position{ .line = line, .col = col };
+                        self.cursor_state.setSelection(self.drag_anchor, drag_pos);
+                    }
+                }
+            }
+            if (input.left_button_released or !input.left_button) {
+                self.drag_selecting = false;
+            }
+        }
+
         // Handle right-click context menus
         if (input.right_button_pressed) {
             self.handleRightClick(input.mouse_x, input.mouse_y, layout);
@@ -794,6 +1006,14 @@ pub const Workbench = struct {
                 continue;
             }
 
+            // Escape cancels active snippet mode
+            if (ev.vk == VK_ESCAPE and self.snippet_active) {
+                self.snippet_active = false;
+                self.snippet_current_stop = 0;
+                self.snippet_tab_stop_count = 0;
+                continue;
+            }
+
             // When command palette is visible, route input there
             if (self.command_palette.visible) {
                 self.handleCommandPaletteInput(ev.vk);
@@ -812,54 +1032,64 @@ pub const Workbench = struct {
                 continue;
             }
 
-            // When sidebar search is active, route key events there
-            if (self.activity_bar.active_icon == 1 and self.sidebar_visible) {
+            // When sidebar search is active and sidebar has focus, route key events there
+            if (self.active_focus == .sidebar and self.activity_bar.active_icon == 1 and self.sidebar_visible) {
                 if (self.handleSidebarSearchKey(ev.vk, ev.ctrl, ev.shift)) continue;
             }
 
-            // Try keybinding lookup
+            // When sidebar explorer is active and sidebar has focus, handle navigation keys
+            if (self.active_focus == .sidebar and self.activity_bar.active_icon == 0 and self.sidebar_visible) {
+                if (self.handleSidebarExplorerKey(ev.vk, ev.ctrl)) continue;
+            }
+
+            // Try keybinding lookup (global shortcuts work regardless of focus)
             if (self.keybindings.lookup(ev.vk, ev.ctrl, ev.shift, ev.alt)) |cmd_index| {
                 self.dispatchCommand(cmd_index);
                 continue;
             }
 
-            // --- Ctrl+key shortcuts ---
+            // --- Ctrl+key shortcuts (global) ---
             if (ev.ctrl and !ev.alt) {
                 if (self.handleCtrlShortcut(ev.vk, ev.shift)) continue;
             }
 
-            // Backspace
-            if (ev.vk == VK_BACK) {
-                if (!self.deleteSelection()) {
-                    self.handleBackspace();
+            // Editor-only keys: only when editor has focus
+            if (self.active_focus == .editor) {
+                // Backspace
+                if (ev.vk == VK_BACK) {
+                    if (!self.deleteSelection()) {
+                        self.handleBackspace();
+                    }
+                    continue;
                 }
-                continue;
-            }
 
-            // Delete
-            if (ev.vk == VK_DEL) {
-                if (!self.deleteSelection()) {
-                    self.handleDelete();
+                // Delete
+                if (ev.vk == VK_DEL) {
+                    if (!self.deleteSelection()) {
+                        self.handleDelete();
+                    }
+                    continue;
                 }
-                continue;
-            }
 
-            // Tab key: insert spaces
-            if (ev.vk == VK_TAB) {
-                _ = self.deleteSelection();
-                self.handleTab();
-                continue;
-            }
+                // Tab key: insert spaces
+                if (ev.vk == VK_TAB) {
+                    _ = self.deleteSelection();
+                    self.handleTab();
+                    continue;
+                }
 
-            // Arrow key cursor movement (with shift/ctrl support)
-            self.handleCursorMovement(ev.vk, ev.shift, ev.ctrl);
+                // Arrow key cursor movement (with shift/ctrl support)
+                self.handleCursorMovement(ev.vk, ev.shift, ev.ctrl);
+            }
         }
 
-        // Dispatch text input to active buffer when no overlay is visible
+        // Dispatch text input based on focus when no overlay is visible
         if (!self.command_palette.visible and !self.find_visible and !self.file_picker.visible) {
-            if (self.activity_bar.active_icon == 1 and self.sidebar_visible) {
+            if (self.active_focus == .sidebar and self.activity_bar.active_icon == 1 and self.sidebar_visible) {
                 self.handleSidebarSearchTextInput(input);
-            } else {
+            } else if (self.active_focus == .sidebar and self.activity_bar.active_icon == 0 and self.sidebar_visible and self.sidebar.rename_active) {
+                self.handleSidebarRenameTextInput(input);
+            } else if (self.active_focus == .editor) {
                 self.handleTextInput(input);
             }
         } else if (self.command_palette.visible) {
@@ -875,10 +1105,20 @@ pub const Workbench = struct {
         self.status_bar.line = cur.line + 1;
         self.status_bar.col = cur.col + 1;
 
-        // Reset blink on any key/text input
+        // Detect cursor position change → trigger smooth movement animation
+        if (cur.line != self.prev_cursor_line or cur.col != self.prev_cursor_col) {
+            // Only animate if we had a previous valid position (not first frame)
+            if (self.cursor_anim_t >= 1.0) {
+                // Store old position before updating
+                self.cursor_anim_t = 0.0;
+            }
+            self.prev_cursor_line = cur.line;
+            self.prev_cursor_col = cur.col;
+        }
+
+        // Reset blink phase on any key/text input (cursor fully visible)
         if (input.key_event_count > 0 or input.text_input_len > 0) {
             self.blink_timer = 0.0;
-            self.cursor_visible = true;
         }
     }
 
@@ -905,7 +1145,7 @@ pub const Workbench = struct {
 
         // 3. Sidebar (delegated to sub-component)
         if (self.sidebar_visible) {
-            self.sidebar.render(layout.getRegion(.sidebar), font_atlas, self.activity_bar.active_icon);
+            self.sidebar.render(layout.getRegion(.sidebar), font_atlas, self.activity_bar.active_icon, &self.file_icon_cache);
         }
 
         // 4. Editor tabs
@@ -916,7 +1156,8 @@ pub const Workbench = struct {
 
         // 6. Editor area
         const editor_area = layout.getRegion(.editor_area);
-        renderRegionBackground(editor_area, EDITOR_BG);
+        const theme = self.getThemeColors();
+        renderRegionBackground(editor_area, theme.editor_bg);
 
         if (self.tab_count == 0) {
             // Welcome / empty state
@@ -933,7 +1174,8 @@ pub const Workbench = struct {
                 font_atlas,
                 self.scroll_top,
                 visible_lines,
-                self.cursor_visible,
+                self.blink_timer,
+                self.cursor_anim_t,
                 layout.window_h,
             );
         }
@@ -965,7 +1207,10 @@ pub const Workbench = struct {
         // 13. Confirm dialog overlay (topmost)
         self.renderConfirmDialog(layout, font_atlas);
 
-        // 14. File picker overlay (above confirm dialog)
+        // 14. Delete confirmation dialog overlay
+        self.renderDeleteDialog(layout, font_atlas);
+
+        // 15. File picker overlay (above confirm dialog)
         if (self.file_picker.visible) {
             self.renderFilePicker(layout, font_atlas);
         }
@@ -1226,12 +1471,26 @@ pub const Workbench = struct {
 
         const new_pos = Position{ .line = line, .col = col };
 
+        // Double-click detection: select word
+        const now = self.accumulated_time;
+        if (!shift and (now - self.last_click_time) < 0.4) {
+            self.select_word(line, col);
+            self.drag_selecting = false;
+            self.last_click_time = 0.0; // reset so triple-click doesn't re-trigger
+            return;
+        }
+        self.last_click_time = now;
+
         if (shift) {
-            // Shift+click: extend selection
+            // Shift+click: extend selection from existing anchor
             const anchor = self.cursor_state.primary().anchor;
             self.cursor_state.setSelection(anchor, new_pos);
+            self.drag_selecting = false;
         } else {
+            // Normal click: set cursor and begin drag selection
             self.cursor_state.setPrimary(new_pos);
+            self.drag_selecting = true;
+            self.drag_anchor = new_pos;
         }
     }
 
@@ -1315,7 +1574,8 @@ pub const Workbench = struct {
         if (self.sidebar_visible) {
             const sidebar_region = layout.getRegion(.sidebar);
             if (sidebar_region.contains(mx, my)) {
-                self.handleSidebarClick(my, sidebar_region);
+                self.active_focus = .sidebar;
+                self.handleSidebarClick(mx, my, sidebar_region);
                 return;
             }
         }
@@ -1324,6 +1584,7 @@ pub const Workbench = struct {
         if (self.panel_visible) {
             const panel_region = layout.getRegion(.panel);
             if (panel_region.contains(mx, my)) {
+                self.active_focus = .panel;
                 self.handlePanelClick(mx, panel_region);
                 return;
             }
@@ -1332,6 +1593,7 @@ pub const Workbench = struct {
         // Editor area clicks
         const editor_area = layout.getRegion(.editor_area);
         if (editor_area.contains(mx, my)) {
+            self.active_focus = .editor;
             const shift = (win32.GetKeyState(win32.VK_SHIFT) & @as(i16, -128)) != 0;
             self.handleMouseClick(input, editor_area, shift);
             return;
@@ -1499,10 +1761,12 @@ pub const Workbench = struct {
                 .find_in_files => {
                     self.sidebar_visible = true;
                     self.activity_bar.active_icon = 1;
+                    self.active_focus = .sidebar;
                 },
                 .replace_in_files => {
                     self.sidebar_visible = true;
                     self.activity_bar.active_icon = 1;
+                    self.active_focus = .sidebar;
                 },
                 .toggle_line_comment => self.handleToggleComment(),
                 .toggle_block_comment => self.handleToggleComment(),
@@ -1542,38 +1806,47 @@ pub const Workbench = struct {
                 .explorer => {
                     self.sidebar_visible = true;
                     self.activity_bar.active_icon = 0;
+                    self.active_focus = .sidebar;
                 },
                 .search => {
                     self.sidebar_visible = true;
                     self.activity_bar.active_icon = 1;
+                    self.active_focus = .sidebar;
                 },
                 .scm => {
                     self.sidebar_visible = true;
                     self.activity_bar.active_icon = 2;
+                    self.active_focus = .sidebar;
                 },
                 .run_and_debug => {
                     self.sidebar_visible = true;
                     self.activity_bar.active_icon = 3;
+                    self.active_focus = .sidebar;
                 },
                 .extensions => {
                     self.sidebar_visible = true;
                     self.activity_bar.active_icon = 4;
+                    self.active_focus = .sidebar;
                 },
                 .problems => {
                     self.panel_visible = true;
                     self.panel.active_tab = 0;
+                    self.active_focus = .panel;
                 },
                 .output => {
                     self.panel_visible = true;
                     self.panel.active_tab = 1;
+                    self.active_focus = .panel;
                 },
                 .debug_console => {
                     self.panel_visible = true;
                     self.panel.active_tab = 1;
+                    self.active_focus = .panel;
                 },
                 .terminal => {
                     self.panel_visible = true;
                     self.panel.active_tab = 2;
+                    self.active_focus = .panel;
                 },
                 .word_wrap => self.status_bar.setNotification("Word Wrap toggled"),
                 .minimap => self.status_bar.setNotification("Minimap toggled"),
@@ -1699,11 +1972,40 @@ pub const Workbench = struct {
         const rel_y = my - region.y;
         const icon_idx: u8 = @intCast(@min(@as(u32, @intCast(@divTrunc(rel_y, icon_btn_h))), 4));
         self.activity_bar.active_icon = icon_idx;
+        self.active_focus = .sidebar;
     }
 
     /// Handle sidebar file entry clicks.
-    fn handleSidebarClick(self: *Workbench, my: i32, region: Rect) void {
-        _ = self.sidebar.handleClick(my, region, self.cell_h);
+    fn handleSidebarClick(self: *Workbench, mx: i32, my: i32, region: Rect) void {
+        // Cancel any active rename if clicking elsewhere
+        if (self.sidebar.rename_active) {
+            self.sidebar.cancelRename();
+        }
+
+        // Check toolbar buttons first (explorer view only)
+        if (self.activity_bar.active_icon == 0) {
+            if (self.sidebar.handleToolbarClick(mx, my, region, self.cell_h)) |action| {
+                switch (action) {
+                    .new_file => self.sidebarNewFile(),
+                    .new_folder => self.sidebarNewFolder(),
+                    .refresh => self.refreshSidebar(),
+                    .collapse_all => self.collapseAllFolders(),
+                }
+                return;
+            }
+        }
+
+        const idx = self.sidebar.handleClick(my, region, self.cell_h) orelse return;
+
+        // If it's a file (not directory), open it
+        if (!self.sidebar.is_dir[idx]) {
+            if (self.sidebar.getEntryPath(idx)) |path| {
+                self.openFile(path);
+            }
+        } else {
+            // Directory was toggled — rescan if expanding at depth 0
+            // (expansion toggle already handled by sidebar.handleClick)
+        }
     }
 
     /// Handle panel tab clicks.
@@ -1942,12 +2244,171 @@ pub const Workbench = struct {
 
     /// Handle Tab key: insert spaces.
     fn handleTab(self: *Workbench) void {
+        // If snippet is active, advance to next tab stop
+        if (self.snippet_active) {
+            self.advanceSnippetTabStop();
+            return;
+        }
+
+        // Try snippet expansion: check if word before cursor matches a snippet prefix
+        if (self.tryExpandSnippet()) return;
+
+        // Default: insert 4 spaces
         const cur = self.cursor_state.primary().active;
         const spaces = "    "; // 4 spaces
         if (self.buffer.insert(cur.line, cur.col, spaces)) {
             self.highlighter.tokenizeLine(cur.line, self.buffer.getLine(cur.line) orelse "");
             self.cursor_state.setPrimary(.{ .line = cur.line, .col = cur.col + 4 });
         }
+    }
+
+    /// Try to expand a snippet at the current cursor position.
+    /// Looks at the word before the cursor and matches it against all
+    /// extension-contributed snippets for the current language.
+    /// Returns true if a snippet was expanded.
+    fn tryExpandSnippet(self: *Workbench) bool {
+        const cur = self.cursor_state.primary().active;
+        const line_text = self.buffer.getLine(cur.line) orelse return false;
+        if (cur.col == 0) return false;
+
+        // Extract the word before cursor (scan backwards for identifier chars)
+        var word_start: u32 = cur.col;
+        while (word_start > 0 and isWordChar(line_text[word_start - 1])) {
+            word_start -= 1;
+        }
+        if (word_start == cur.col) return false; // no word before cursor
+
+        const prefix = line_text[word_start..cur.col];
+        const lang = self.highlighter.language;
+
+        // Search all extension snippets for a matching prefix
+        inline for (manifest.extensions) |extension| {
+            for (extension.snippets) |snip| {
+                // Check language scope: null = all languages, otherwise must match
+                if (snip.language) |snip_lang| {
+                    if (snip_lang != lang) continue;
+                } // null = matches all languages
+
+                if (strEql(prefix, snip.prefix)) {
+                    // Found a match — delete the prefix text and insert snippet body
+                    self.expandSnippetBody(cur.line, word_start, cur.col, snip.body);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Expand a snippet body into the buffer, replacing text from word_start to word_end.
+    /// Handles $1, $2, ... tab stops and $0 final cursor position.
+    /// Multi-line snippets (containing \n) insert across multiple lines.
+    fn expandSnippetBody(self: *Workbench, line: u32, word_start: u32, word_end: u32, body: []const u8) void {
+        // Delete the prefix text
+        const prefix_len = word_end - word_start;
+        if (prefix_len > 0) {
+            if (!self.buffer.delete(line, word_start, prefix_len)) return;
+        }
+
+        // Parse snippet body: replace $1..$9 with empty placeholders, track positions.
+        // For simplicity, insert the body with tab-stop markers removed,
+        // and record the positions of $1, $2, etc.
+        var insert_buf: [1024]u8 = undefined;
+        var insert_len: u16 = 0;
+        var tab_stop_positions: [8]u32 = [_]u32{0} ** 8;
+        var tab_stop_count: u8 = 0;
+        var final_cursor_pos: u32 = 0;
+        var has_final: bool = false;
+
+        var bi: usize = 0;
+        while (bi < body.len and insert_len < 1024) {
+            if (body[bi] == '$' and bi + 1 < body.len) {
+                const digit = body[bi + 1];
+                if (digit == '0') {
+                    // $0 = final cursor position
+                    final_cursor_pos = word_start + @as(u32, insert_len);
+                    has_final = true;
+                    bi += 2;
+                    continue;
+                } else if (digit >= '1' and digit <= '9') {
+                    // $N = tab stop
+                    if (tab_stop_count < 8) {
+                        tab_stop_positions[tab_stop_count] = word_start + @as(u32, insert_len);
+                        tab_stop_count += 1;
+                    }
+                    bi += 2;
+                    continue;
+                }
+            }
+            if (body[bi] == '\\' and bi + 1 < body.len and body[bi + 1] == 'n') {
+                // \n in snippet body = newline
+                insert_buf[insert_len] = '\n';
+                insert_len += 1;
+                bi += 2;
+                continue;
+            }
+            insert_buf[insert_len] = body[bi];
+            insert_len += 1;
+            bi += 1;
+        }
+
+        // Insert the processed snippet text
+        if (insert_len > 0) {
+            if (!self.buffer.insert(line, word_start, insert_buf[0..insert_len])) return;
+        }
+
+        // Retokenize affected lines
+        var retok_line: u32 = line;
+        while (retok_line < self.buffer.line_count and retok_line <= line + 20) : (retok_line += 1) {
+            self.highlighter.tokenizeLine(retok_line, self.buffer.getLine(retok_line) orelse "");
+        }
+
+        // Set up tab stop navigation
+        if (tab_stop_count > 0) {
+            self.snippet_active = true;
+            self.snippet_tab_stops = tab_stop_positions;
+            self.snippet_tab_stop_count = tab_stop_count;
+            self.snippet_current_stop = 0;
+            // Move cursor to first tab stop
+            self.moveCursorToOffset(line, word_start, tab_stop_positions[0]);
+        } else if (has_final) {
+            self.moveCursorToOffset(line, word_start, final_cursor_pos);
+        } else {
+            // No tab stops — place cursor at end of inserted text
+            self.moveCursorToOffset(line, word_start, word_start + @as(u32, insert_len));
+        }
+    }
+
+    /// Advance to the next snippet tab stop, or finish snippet mode.
+    fn advanceSnippetTabStop(self: *Workbench) void {
+        self.snippet_current_stop += 1;
+        if (self.snippet_current_stop >= self.snippet_tab_stop_count) {
+            // Done with all tab stops
+            self.snippet_active = false;
+            self.snippet_current_stop = 0;
+            self.snippet_tab_stop_count = 0;
+            return;
+        }
+        // Move cursor to next tab stop position
+        // Note: positions are absolute offsets from line start, stored at expansion time
+        const pos = self.snippet_tab_stops[self.snippet_current_stop];
+        // Find which line/col this offset maps to
+        self.moveCursorToBufferOffset(pos);
+    }
+
+    /// Move cursor to a buffer-relative position given a line base and character offset.
+    fn moveCursorToOffset(self: *Workbench, base_line: u32, _base_col: u32, target_col: u32) void {
+        _ = _base_col;
+        // Simple: for single-line snippets, target_col is the column on base_line
+        // For multi-line, we'd need to scan newlines — but the offset is within the line
+        self.cursor_state.setPrimary(.{ .line = base_line, .col = target_col });
+    }
+
+    /// Move cursor to an absolute buffer offset (scanning lines).
+    fn moveCursorToBufferOffset(self: *Workbench, offset: u32) void {
+        // For simplicity, treat offset as column on current line
+        // (tab stops in single-line context)
+        const cur = self.cursor_state.primary().active;
+        self.cursor_state.setPrimary(.{ .line = cur.line, .col = offset });
     }
 
     /// Handle Ctrl+/ toggle line comment.
@@ -2102,6 +2563,429 @@ pub const Workbench = struct {
     }
 
     // =========================================================================
+    // Sidebar explorer — keyboard navigation + inline rename
+    // =========================================================================
+
+    /// Handle key events when sidebar explorer view is active.
+    /// Returns true if the key was consumed.
+    fn handleSidebarExplorerKey(self: *Workbench, vk: u16, ctrl: bool) bool {
+        // When inline rename is active, route keys to rename input
+        if (self.sidebar.rename_active) {
+            return self.handleSidebarRenameKey(vk);
+        }
+
+        // Up: move selection up
+        if (vk == VK_UP) {
+            self.sidebar.moveUp();
+            return true;
+        }
+        // Down: move selection down
+        if (vk == VK_DOWN) {
+            self.sidebar.moveDown();
+            return true;
+        }
+        // Left: collapse or move to parent
+        if (vk == VK_LEFT) {
+            self.sidebar.collapseOrParent();
+            return true;
+        }
+        // Right: expand or move to first child
+        if (vk == VK_RIGHT) {
+            self.sidebar.expandOrFirstChild();
+            return true;
+        }
+        // Enter: open file or toggle directory
+        if (vk == VK_RETURN) {
+            self.sidebarOpenSelected();
+            return true;
+        }
+        // F2: start rename
+        if (vk == 0x71) { // VK_F2
+            self.sidebarStartRename();
+            return true;
+        }
+        // Delete: delete selected entry
+        if (vk == VK_DEL) {
+            self.sidebarDeleteSelected();
+            return true;
+        }
+        // Escape: deselect and return focus to editor
+        if (vk == VK_ESCAPE) {
+            self.sidebar.selected_row = -1;
+            self.active_focus = .editor;
+            return true;
+        }
+        // Home: jump to first entry
+        if (vk == VK_HOME) {
+            if (self.sidebar.entry_count > 0) {
+                self.sidebar.selected_row = 0;
+                self.sidebar.scroll_top = 0;
+            }
+            return true;
+        }
+        // End: jump to last entry
+        if (vk == VK_END) {
+            if (self.sidebar.entry_count > 0) {
+                self.sidebar.selected_row = @as(i16, @intCast(self.sidebar.entry_count)) - 1;
+                self.sidebar.ensureSelectedVisible();
+            }
+            return true;
+        }
+        // Ctrl+C: copy path
+        if (vk == VK_C and ctrl) {
+            self.sidebarCopyPath(false);
+            return true;
+        }
+        // Ctrl+Shift+C: copy relative path (we use Ctrl+C for absolute, context menu for relative)
+        return false;
+    }
+
+    /// Handle key events during inline rename.
+    fn handleSidebarRenameKey(self: *Workbench, vk: u16) bool {
+        if (vk == VK_ESCAPE) {
+            self.sidebar.cancelRename();
+            return true;
+        }
+        if (vk == VK_RETURN) {
+            self.sidebarCommitRename();
+            return true;
+        }
+        if (vk == VK_BACK) {
+            self.sidebar.renameBackspace();
+            return true;
+        }
+        return false;
+    }
+
+    /// Open the currently selected sidebar entry (file or toggle dir).
+    fn sidebarOpenSelected(self: *Workbench) void {
+        if (self.sidebar.selected_row < 0 or self.sidebar.selected_row >= self.sidebar.entry_count) return;
+        const idx: u8 = @intCast(self.sidebar.selected_row);
+        if (self.sidebar.is_dir[idx]) {
+            self.sidebar.expanded[idx] = !self.sidebar.expanded[idx];
+        } else {
+            if (self.sidebar.getEntryPath(idx)) |path| {
+                self.openFile(path);
+                self.active_focus = .editor;
+            }
+        }
+    }
+
+    /// Start inline rename for the selected sidebar entry.
+    fn sidebarStartRename(self: *Workbench) void {
+        if (self.sidebar.selected_row < 0) return;
+        self.sidebar.startRename();
+    }
+
+    /// Commit inline rename: perform the actual filesystem rename.
+    fn sidebarCommitRename(self: *Workbench) void {
+        if (!self.sidebar.rename_active or self.sidebar.rename_row < 0) return;
+        const idx: u8 = @intCast(self.sidebar.rename_row);
+        const old_path = self.sidebar.getEntryPath(idx) orelse {
+            self.sidebar.cancelRename();
+            return;
+        };
+
+        // Build new path: parent directory + \ + new name
+        const new_name = self.sidebar.getRenameText();
+        if (new_name.len == 0) {
+            self.sidebar.cancelRename();
+            return;
+        }
+
+        // Find the last backslash in old path to get parent dir
+        var new_path_w: [sidebar_mod.MAX_PATH_W]u16 = [_]u16{0} ** sidebar_mod.MAX_PATH_W;
+        const old_len = self.sidebar.entry_path_lens[idx];
+        var last_sep: u16 = 0;
+        var oi: u16 = 0;
+        while (oi < old_len) : (oi += 1) {
+            new_path_w[oi] = old_path[oi];
+            if (old_path[oi] == '\\' or old_path[oi] == '/') {
+                last_sep = oi + 1;
+            }
+        }
+        // Replace filename portion with new name
+        var np: u16 = last_sep;
+        var ni: usize = 0;
+        while (ni < new_name.len and np < sidebar_mod.MAX_PATH_W - 1) : (ni += 1) {
+            new_path_w[np] = @intCast(new_name[ni]);
+            np += 1;
+        }
+        new_path_w[np] = 0;
+
+        if (file_service.renameFile(old_path, @ptrCast(&new_path_w))) {
+            // Update the sidebar entry label and path
+            _ = self.sidebar.commitRename();
+            // Update stored path
+            @memcpy(self.sidebar.entry_paths_w[idx][0..np], new_path_w[0..np]);
+            self.sidebar.entry_paths_w[idx][np] = 0;
+            self.sidebar.entry_path_lens[idx] = np;
+            self.status_bar.setNotification("Renamed");
+        } else {
+            self.sidebar.cancelRename();
+            self.status_bar.setNotification("Rename failed");
+        }
+    }
+
+    /// Delete the selected sidebar entry (file or empty directory).
+    fn sidebarDeleteSelected(self: *Workbench) void {
+        self.showDeleteDialog();
+    }
+
+    /// Remove a sidebar entry by index, shifting remaining entries left.
+    fn sidebarRemoveEntry(self: *Workbench, idx: u8) void {
+        if (idx >= self.sidebar.entry_count) return;
+        var i: u8 = idx;
+        while (i + 1 < self.sidebar.entry_count) : (i += 1) {
+            self.sidebar.entries[i] = self.sidebar.entries[i + 1];
+            self.sidebar.entry_lens[i] = self.sidebar.entry_lens[i + 1];
+            self.sidebar.is_dir[i] = self.sidebar.is_dir[i + 1];
+            self.sidebar.indent_level[i] = self.sidebar.indent_level[i + 1];
+            self.sidebar.expanded[i] = self.sidebar.expanded[i + 1];
+            self.sidebar.entry_paths_w[i] = self.sidebar.entry_paths_w[i + 1];
+            self.sidebar.entry_path_lens[i] = self.sidebar.entry_path_lens[i + 1];
+        }
+        self.sidebar.entry_count -= 1;
+        if (self.sidebar.selected_row >= self.sidebar.entry_count) {
+            self.sidebar.selected_row = @as(i16, @intCast(self.sidebar.entry_count)) - 1;
+        }
+    }
+
+    /// Refresh the sidebar by rescanning the project root.
+    fn refreshSidebar(self: *Workbench) void {
+        if (self.project_root_len == 0) return;
+        var root_z: [file_picker_mod.MAX_PATH_LEN]u16 = [_]u16{0} ** file_picker_mod.MAX_PATH_LEN;
+        var ri: u32 = 0;
+        while (ri < self.project_root_len and ri < file_picker_mod.MAX_PATH_LEN - 1) : (ri += 1) {
+            root_z[ri] = self.project_root[ri];
+        }
+        root_z[ri] = 0;
+        self.scanFolderToSidebar(@ptrCast(&root_z), self.project_root_len, 0);
+        self.status_bar.setNotification("Refreshed");
+    }
+
+    /// Collapse all expanded folders in the sidebar.
+    fn collapseAllFolders(self: *Workbench) void {
+        var i: u8 = 0;
+        while (i < self.sidebar.entry_count) : (i += 1) {
+            if (self.sidebar.is_dir[i]) {
+                self.sidebar.expanded[i] = false;
+            }
+        }
+    }
+
+    /// Create a new file in the selected directory (or project root).
+    fn sidebarNewFile(self: *Workbench) void {
+        var dir_path_w: [sidebar_mod.MAX_PATH_W]u16 = undefined;
+        var dir_len: u16 = 0;
+
+        if (!self.getSelectedDirPath(&dir_path_w, &dir_len)) return;
+
+        // Create empty file: dir + \untitled
+        var file_path_w: [sidebar_mod.MAX_PATH_W]u16 = [_]u16{0} ** sidebar_mod.MAX_PATH_W;
+        var fp: u16 = 0;
+        var di: u16 = 0;
+        while (di < dir_len and fp < sidebar_mod.MAX_PATH_W - 20) : (di += 1) {
+            file_path_w[fp] = dir_path_w[di];
+            fp += 1;
+        }
+        if (fp < sidebar_mod.MAX_PATH_W - 1) {
+            file_path_w[fp] = '\\';
+            fp += 1;
+        }
+        const untitled = "untitled";
+        for (untitled) |ch| {
+            if (fp < sidebar_mod.MAX_PATH_W - 1) {
+                file_path_w[fp] = @intCast(ch);
+                fp += 1;
+            }
+        }
+        file_path_w[fp] = 0;
+
+        // Write empty file
+        if (file_service.writeFile(@ptrCast(&file_path_w), "")) {
+            // Add to sidebar and start rename
+            const depth: u8 = if (self.sidebar.selected_row >= 0 and self.sidebar.selected_row < self.sidebar.entry_count) blk: {
+                const sel: u8 = @intCast(self.sidebar.selected_row);
+                break :blk if (self.sidebar.is_dir[sel]) self.sidebar.indent_level[sel] + 1 else self.sidebar.indent_level[sel];
+            } else 0;
+            self.sidebar.addTreeEntryWithPath(untitled, false, depth, false, @ptrCast(&file_path_w), fp);
+            self.sidebar.selected_row = @as(i16, @intCast(self.sidebar.entry_count)) - 1;
+            self.sidebar.startRename();
+        } else {
+            self.status_bar.setNotification("New file failed");
+        }
+    }
+
+    /// Create a new folder in the selected directory (or project root).
+    fn sidebarNewFolder(self: *Workbench) void {
+        var dir_path_w: [sidebar_mod.MAX_PATH_W]u16 = undefined;
+        var dir_len: u16 = 0;
+
+        if (!self.getSelectedDirPath(&dir_path_w, &dir_len)) return;
+
+        // Create directory: dir + \newfolder
+        var folder_path_w: [sidebar_mod.MAX_PATH_W]u16 = [_]u16{0} ** sidebar_mod.MAX_PATH_W;
+        var fp: u16 = 0;
+        var di: u16 = 0;
+        while (di < dir_len and fp < sidebar_mod.MAX_PATH_W - 20) : (di += 1) {
+            folder_path_w[fp] = dir_path_w[di];
+            fp += 1;
+        }
+        if (fp < sidebar_mod.MAX_PATH_W - 1) {
+            folder_path_w[fp] = '\\';
+            fp += 1;
+        }
+        const newfolder = "newfolder";
+        for (newfolder) |ch| {
+            if (fp < sidebar_mod.MAX_PATH_W - 1) {
+                folder_path_w[fp] = @intCast(ch);
+                fp += 1;
+            }
+        }
+        folder_path_w[fp] = 0;
+
+        if (file_service.createDirectory(@ptrCast(&folder_path_w))) {
+            const depth: u8 = if (self.sidebar.selected_row >= 0 and self.sidebar.selected_row < self.sidebar.entry_count) blk: {
+                const sel: u8 = @intCast(self.sidebar.selected_row);
+                break :blk if (self.sidebar.is_dir[sel]) self.sidebar.indent_level[sel] + 1 else self.sidebar.indent_level[sel];
+            } else 0;
+            self.sidebar.addTreeEntryWithPath(newfolder, true, depth, false, @ptrCast(&folder_path_w), fp);
+            self.sidebar.selected_row = @as(i16, @intCast(self.sidebar.entry_count)) - 1;
+            self.sidebar.startRename();
+        } else {
+            self.status_bar.setNotification("New folder failed");
+        }
+    }
+
+    /// Get the directory path for the currently selected entry.
+    /// If a directory is selected, returns its path. If a file is selected, returns its parent.
+    /// If nothing is selected, returns the project root.
+    /// Returns false if no project root is set.
+    fn getSelectedDirPath(self: *Workbench, out: *[sidebar_mod.MAX_PATH_W]u16, out_len: *u16) bool {
+        if (self.sidebar.selected_row >= 0 and self.sidebar.selected_row < self.sidebar.entry_count) {
+            const sel: u8 = @intCast(self.sidebar.selected_row);
+            if (self.sidebar.is_dir[sel]) {
+                if (self.sidebar.getEntryPath(sel)) |p| {
+                    const plen = self.sidebar.entry_path_lens[sel];
+                    @memcpy(out[0..plen], p[0..plen]);
+                    out[plen] = 0;
+                    out_len.* = plen;
+                    return true;
+                }
+            } else {
+                // Use parent directory
+                if (self.sidebar.getEntryPath(sel)) |p| {
+                    const plen = self.sidebar.entry_path_lens[sel];
+                    // Find last backslash
+                    var last_sep: u16 = 0;
+                    var si: u16 = 0;
+                    while (si < plen) : (si += 1) {
+                        if (p[si] == '\\' or p[si] == '/') last_sep = si;
+                    }
+                    if (last_sep > 0) {
+                        @memcpy(out[0..last_sep], p[0..last_sep]);
+                        out[last_sep] = 0;
+                        out_len.* = last_sep;
+                        return true;
+                    }
+                }
+            }
+        }
+        // Fall back to project root
+        if (self.project_root_len > 0) {
+            const plen: u16 = @intCast(self.project_root_len);
+            @memcpy(out[0..plen], self.project_root[0..plen]);
+            out[plen] = 0;
+            out_len.* = plen;
+            return true;
+        }
+        return false;
+    }
+
+    /// Copy the selected sidebar entry's path to clipboard.
+    fn sidebarCopyPath(self: *Workbench, relative: bool) void {
+        if (self.sidebar.selected_row < 0 or self.sidebar.selected_row >= self.sidebar.entry_count) return;
+        const idx: u8 = @intCast(self.sidebar.selected_row);
+        const path = self.sidebar.getEntryPath(idx) orelse return;
+        const path_len = self.sidebar.entry_path_lens[idx];
+
+        if (relative and self.project_root_len > 0) {
+            // Copy relative path: strip project root prefix
+            const root_len: u16 = @intCast(self.project_root_len);
+            if (path_len > root_len + 1) {
+                // Skip root + backslash
+                const rel_start = root_len + 1;
+                const rel_len = path_len - rel_start;
+                self.copyUtf16ToClipboard(path + rel_start, rel_len);
+            }
+        } else {
+            self.copyUtf16ToClipboard(path, path_len);
+        }
+        self.status_bar.setNotification("Path copied");
+    }
+
+    /// Copy a UTF-16 string to the Win32 clipboard.
+    fn copyUtf16ToClipboard(self: *Workbench, text: [*]const u16, len: u16) void {
+        _ = self;
+        const byte_size = (@as(usize, len) + 1) * 2; // +1 for null terminator
+        const hmem = win32.GlobalAlloc(win32.GMEM_MOVEABLE, byte_size) orelse return;
+        const ptr = win32.GlobalLock(hmem) orelse {
+            _ = win32.GlobalFree(hmem);
+            return;
+        };
+        const dest: [*]u16 = @ptrCast(@alignCast(ptr));
+        @memcpy(dest[0..len], text[0..len]);
+        dest[len] = 0;
+        _ = win32.GlobalUnlock(hmem);
+
+        if (win32.OpenClipboard(null) != 0) {
+            _ = win32.EmptyClipboard();
+            _ = win32.SetClipboardData(win32.CF_UNICODETEXT, hmem);
+            _ = win32.CloseClipboard();
+        } else {
+            _ = win32.GlobalFree(hmem);
+        }
+    }
+
+    /// Reveal the selected sidebar entry in Windows File Explorer.
+    fn sidebarRevealInExplorer(self: *Workbench) void {
+        if (self.sidebar.selected_row < 0 or self.sidebar.selected_row >= self.sidebar.entry_count) return;
+        const idx: u8 = @intCast(self.sidebar.selected_row);
+        const path = self.sidebar.getEntryPath(idx) orelse return;
+
+        // Build /select, command for explorer.exe
+        const select_prefix = comptime [_]u16{ '/', 's', 'e', 'l', 'e', 'c', 't', ',', ' ' };
+        var cmd_w: [sidebar_mod.MAX_PATH_W + 16]u16 = [_]u16{0} ** (sidebar_mod.MAX_PATH_W + 16);
+        @memcpy(cmd_w[0..select_prefix.len], &select_prefix);
+        var cp: u16 = select_prefix.len;
+        const plen = self.sidebar.entry_path_lens[idx];
+        var pi: u16 = 0;
+        while (pi < plen and cp < cmd_w.len - 1) : (pi += 1) {
+            cmd_w[cp] = path[pi];
+            cp += 1;
+        }
+        cmd_w[cp] = 0;
+
+        const explorer = comptime [_]u16{ 'e', 'x', 'p', 'l', 'o', 'r', 'e', 'r', '.', 'e', 'x', 'e', 0 };
+        const open = comptime [_]u16{ 'o', 'p', 'e', 'n', 0 };
+        _ = win32.ShellExecuteW(null, @ptrCast(&open), @ptrCast(&explorer), @ptrCast(&cmd_w), null, win32.SW_SHOW);
+    }
+
+    /// Handle text input during inline rename.
+    fn handleSidebarRenameTextInput(self: *Workbench, input: *const InputState) void {
+        if (input.text_input_len == 0) return;
+        var i: u32 = 0;
+        while (i < input.text_input_len) : (i += 1) {
+            const ch = input.text_input[i];
+            if (ch < 0x20) continue; // skip control chars
+            // Disallow path separators and invalid filename chars in rename
+            if (ch == '\\' or ch == '/' or ch == ':' or ch == '*' or ch == '?' or ch == '"' or ch == '<' or ch == '>' or ch == '|') continue;
+            self.sidebar.renameAppendChar(ch);
+        }
+    }
+
+    // =========================================================================
     // Sidebar search — input handling + execution
     // =========================================================================
 
@@ -2109,12 +2993,13 @@ pub const Workbench = struct {
     /// Returns true if the key was consumed.
     fn handleSidebarSearchKey(self: *Workbench, vk: u16, ctrl: bool, shift: bool) bool {
         _ = shift;
-        // Escape: clear search or switch back to explorer
+        // Escape: clear search or switch back to explorer, return focus to editor
         if (vk == VK_ESCAPE) {
             if (self.sidebar.search_query_len > 0) {
                 self.sidebar.clearSearch();
             } else {
                 self.activity_bar.active_icon = 0;
+                self.active_focus = .editor;
             }
             return true;
         }
@@ -2389,6 +3274,7 @@ pub const Workbench = struct {
         // Show sidebar and switch to explorer view
         self.sidebar_visible = true;
         self.activity_bar.active_icon = 0;
+        self.active_focus = .sidebar;
     }
 
     /// Recursively scan a directory and populate the sidebar tree.
@@ -2439,21 +3325,39 @@ pub const Workbench = struct {
         var di: u8 = 0;
         while (di < dir_count) : (di += 1) {
             const name = dir_names[di][0..dir_name_lens[di]];
-            self.sidebar.addTreeEntry(name, true, depth, depth == 0);
+            const dpath_len = dir_path_lens[di];
+            dir_paths_w[di][dpath_len] = 0; // null-terminate
+            self.sidebar.addTreeEntryWithPath(name, true, depth, depth == 0, @ptrCast(&dir_paths_w[di]), dpath_len);
 
             // Recurse into subdirectory (only at depth 0 for performance)
             if (depth == 0) {
-                const sub_len = dir_path_lens[di];
-                dir_paths_w[di][sub_len] = 0; // null-terminate
-                self.scanFolderToSidebar(@ptrCast(&dir_paths_w[di]), sub_len, depth + 1);
+                self.scanFolderToSidebar(@ptrCast(&dir_paths_w[di]), dpath_len, depth + 1);
             }
         }
 
-        // Add files
+        // Add files — build full path: dir_path + \ + filename
         var fi: u8 = 0;
         while (fi < file_count) : (fi += 1) {
             const name = file_names[fi][0..file_name_lens[fi]];
-            self.sidebar.addTreeEntry(name, false, depth, false);
+            // Build UTF-16 file path
+            var fpath_w: [sidebar_mod.MAX_PATH_W]u16 = [_]u16{0} ** sidebar_mod.MAX_PATH_W;
+            var fp: u16 = 0;
+            var dpi: u32 = 0;
+            while (dpi < dir_len and fp < sidebar_mod.MAX_PATH_W - 2) : (dpi += 1) {
+                fpath_w[fp] = dir_path[dpi];
+                fp += 1;
+            }
+            if (fp < sidebar_mod.MAX_PATH_W - 1) {
+                fpath_w[fp] = '\\';
+                fp += 1;
+            }
+            var ni: usize = 0;
+            while (ni < name.len and fp < sidebar_mod.MAX_PATH_W - 1) : (ni += 1) {
+                fpath_w[fp] = @intCast(name[ni]);
+                fp += 1;
+            }
+            fpath_w[fp] = 0;
+            self.sidebar.addTreeEntryWithPath(name, false, depth, false, @ptrCast(&fpath_w), fp);
         }
     }
 
@@ -2864,7 +3768,8 @@ pub const Workbench = struct {
     }
 
     fn renderTabBar(self: *const Workbench, region: Rect, font_atlas: *const FontAtlas) void {
-        renderRegionBackground(region, TAB_INACTIVE_BG);
+        const theme = self.getThemeColors();
+        renderRegionBackground(region, theme.tab_inactive_bg);
 
         if (region.w <= 0 or region.h <= 0) return;
 
@@ -2878,7 +3783,7 @@ pub const Workbench = struct {
         while (t < self.tab_count) : (t += 1) {
             const tab = self.tabs[t];
             const is_active = (t == self.active_tab);
-            const bg = if (is_active) TAB_ACTIVE_BG else TAB_INACTIVE_BG;
+            const bg = if (is_active) theme.tab_active_bg else theme.tab_inactive_bg;
             const tab_rect = Rect{
                 .x = region.x + @as(i32, t) * tab_width,
                 .y = region.y,
@@ -3641,27 +4546,25 @@ pub const Workbench = struct {
     fn dispatchSidebarMenuCmd(self: *Workbench, cmd_id: u16) void {
         const cmd: context_menu.SidebarCmd = @enumFromInt(cmd_id);
         switch (cmd) {
-            .new_file => self.handleNewFile(),
-            .new_folder => self.status_bar.setNotification("New Folder"),
+            .new_file => self.sidebarNewFile(),
+            .new_folder => self.sidebarNewFolder(),
             .cut => self.cutSelection(),
             .copy => self.copySelection(),
             .paste => self.pasteFromClipboard(),
-            .copy_path => {
-                if (self.current_file_path_len > 0) self.copyPathToClipboard();
-            },
-            .copy_relative_path => {
-                if (self.current_file_path_len > 0) self.copyPathToClipboard();
-            },
-            .rename => self.status_bar.setNotification("Rename"),
-            .delete => self.status_bar.setNotification("Delete"),
-            .reveal_in_file_explorer => self.status_bar.setNotification("Reveal in Explorer"),
+            .copy_path => self.sidebarCopyPath(false),
+            .copy_relative_path => self.sidebarCopyPath(true),
+            .rename => self.sidebarStartRename(),
+            .delete => self.sidebarDeleteSelected(),
+            .reveal_in_file_explorer => self.sidebarRevealInExplorer(),
             .open_in_integrated_terminal => {
                 self.panel_visible = true;
                 self.panel.active_tab = 2; // Terminal tab
+                self.active_focus = .panel;
             },
             .find_in_folder => {
                 self.sidebar_visible = true;
                 self.activity_bar.active_icon = 1; // Search
+                self.active_focus = .sidebar;
             },
             .collapse_folders => {
                 // Collapse all expanded folders
@@ -3896,6 +4799,192 @@ pub const Workbench = struct {
         }
 
         return true; // consumed (inside dialog)
+    }
+
+    /// Render the delete confirmation dialog overlay with animated fade-in and warning icon.
+    fn renderDeleteDialog(self: *const Workbench, layout: *const LayoutState, font_atlas: *const FontAtlas) void {
+        if (!self.delete_dialog_visible) return;
+
+        const win_w = layout.window_w;
+        const win_h = layout.window_h;
+        const cell_w = font_atlas.cell_w;
+        const cell_h = font_atlas.cell_h;
+
+        // Fade-in alpha with slight scale animation
+        const t = self.delete_dialog_anim;
+        const bg_alpha: u8 = @intFromFloat(@min(255.0, t * 180.0));
+
+        // Semi-transparent dark overlay
+        gl.glEnable(gl.GL_BLEND);
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+        renderRegionBackground(Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h }, Color.rgba(0x00, 0x00, 0x00, bg_alpha));
+
+        if (t < 0.1) return;
+
+        // Dialog dimensions
+        const dlg_w: i32 = 420;
+        const dlg_h: i32 = 160;
+        const dlg_x = @divTrunc(win_w - dlg_w, 2);
+        // Slide down from slightly above center
+        const target_y = @divTrunc(win_h - dlg_h, 2) - 20;
+        const offset: i32 = @intFromFloat((1.0 - t) * 18.0);
+        const dlg_y = target_y - offset;
+
+        // Dialog background with subtle shadow
+        renderRegionBackground(Rect{ .x = dlg_x + 3, .y = dlg_y + 3, .w = dlg_w, .h = dlg_h }, Color.rgba(0x00, 0x00, 0x00, 80));
+        renderRegionBackground(Rect{ .x = dlg_x, .y = dlg_y, .w = dlg_w, .h = dlg_h }, Color.rgb(0x25, 0x25, 0x25));
+
+        // Red top accent bar (warning indicator)
+        renderRegionBackground(Rect{ .x = dlg_x, .y = dlg_y, .w = dlg_w, .h = 2 }, Color.rgb(0xCC, 0x44, 0x44));
+
+        // Border
+        renderRegionBackground(Rect{ .x = dlg_x, .y = dlg_y + dlg_h - 1, .w = dlg_w, .h = 1 }, Color.rgb(0x45, 0x45, 0x45));
+        renderRegionBackground(Rect{ .x = dlg_x, .y = dlg_y + 2, .w = 1, .h = dlg_h - 2 }, Color.rgb(0x45, 0x45, 0x45));
+        renderRegionBackground(Rect{ .x = dlg_x + dlg_w - 1, .y = dlg_y + 2, .w = 1, .h = dlg_h - 2 }, Color.rgb(0x45, 0x45, 0x45));
+
+        // Warning triangle icon (⚠)
+        const icon_x = dlg_x + 18;
+        const icon_cy: f32 = @floatFromInt(dlg_y + 18 + @divTrunc(cell_h, 2));
+        const icon_cx: f32 = @floatFromInt(icon_x + @divTrunc(cell_h, 2));
+        const icon_s: f32 = @floatFromInt(@divTrunc(cell_h, 2) + 2);
+        gl.glDisable(gl.GL_TEXTURE_2D);
+        // Triangle outline
+        gl.glColor4f(0.95, 0.65, 0.15, t);
+        gl.glBegin(gl.GL_TRIANGLES);
+        gl.glVertex2f(icon_cx, icon_cy - icon_s);
+        gl.glVertex2f(icon_cx - icon_s * 0.9, icon_cy + icon_s * 0.6);
+        gl.glVertex2f(icon_cx + icon_s * 0.9, icon_cy + icon_s * 0.6);
+        gl.glEnd();
+        // Inner dark fill
+        gl.glColor4f(0.15, 0.15, 0.15, t);
+        gl.glBegin(gl.GL_TRIANGLES);
+        gl.glVertex2f(icon_cx, icon_cy - icon_s * 0.6);
+        gl.glVertex2f(icon_cx - icon_s * 0.55, icon_cy + icon_s * 0.4);
+        gl.glVertex2f(icon_cx + icon_s * 0.55, icon_cy + icon_s * 0.4);
+        gl.glEnd();
+        // Exclamation mark (line + dot)
+        gl.glColor4f(0.95, 0.65, 0.15, t);
+        gl.glBegin(gl.GL_QUADS);
+        gl.glVertex2f(icon_cx - 1.0, icon_cy - icon_s * 0.3);
+        gl.glVertex2f(icon_cx + 1.0, icon_cy - icon_s * 0.3);
+        gl.glVertex2f(icon_cx + 1.0, icon_cy + icon_s * 0.1);
+        gl.glVertex2f(icon_cx - 1.0, icon_cy + icon_s * 0.1);
+        gl.glEnd();
+        gl.glBegin(gl.GL_QUADS);
+        gl.glVertex2f(icon_cx - 1.0, icon_cy + icon_s * 0.2);
+        gl.glVertex2f(icon_cx + 1.0, icon_cy + icon_s * 0.2);
+        gl.glVertex2f(icon_cx + 1.0, icon_cy + icon_s * 0.35);
+        gl.glVertex2f(icon_cx - 1.0, icon_cy + icon_s * 0.35);
+        gl.glEnd();
+
+        // Title text
+        const title_x = icon_x + cell_h + 8;
+        font_atlas.renderText("Confirm Delete", @floatFromInt(title_x), @floatFromInt(dlg_y + 16), Color.rgb(0xE0, 0xE0, 0xE0));
+
+        // Message: "Are you sure you want to delete '<name>'?"
+        const msg_y = dlg_y + 16 + cell_h + 16;
+        const kind_str = if (self.delete_dialog_is_dir) "folder" else "file";
+        // Build message in stack buffer
+        var msg_buf: [160]u8 = undefined;
+        const prefix = "Move ";
+        const mid = " '";
+        const name = self.delete_dialog_name[0..self.delete_dialog_name_len];
+        const suffix = "' to the trash?";
+        var pos: usize = 0;
+        @memcpy(msg_buf[pos..][0..prefix.len], prefix);
+        pos += prefix.len;
+        @memcpy(msg_buf[pos..][0..kind_str.len], kind_str);
+        pos += kind_str.len;
+        @memcpy(msg_buf[pos..][0..mid.len], mid);
+        pos += mid.len;
+        const name_copy_len = @min(name.len, msg_buf.len - pos - suffix.len);
+        @memcpy(msg_buf[pos..][0..name_copy_len], name[0..name_copy_len]);
+        pos += name_copy_len;
+        @memcpy(msg_buf[pos..][0..suffix.len], suffix);
+        pos += suffix.len;
+        font_atlas.renderText(msg_buf[0..pos], @floatFromInt(dlg_x + 18), @floatFromInt(msg_y), Color.rgb(0xBB, 0xBB, 0xBB));
+
+        // Buttons: [Delete] [Cancel] — right-aligned
+        const btn_h: i32 = 28;
+        const btn_pad: i32 = 10;
+        const btn_y = dlg_y + dlg_h - btn_h - 18;
+
+        const btn_labels = [_][]const u8{ "Delete", "Cancel" };
+        const btn_widths = [_]i32{
+            @as(i32, @intCast(btn_labels[0].len)) * cell_w + 28,
+            @as(i32, @intCast(btn_labels[1].len)) * cell_w + 28,
+        };
+        const total_btn_w = btn_widths[0] + btn_widths[1] + btn_pad;
+        var bx = dlg_x + dlg_w - total_btn_w - 18;
+
+        for (btn_labels, 0..) |label, i| {
+            const is_selected = (@as(u8, @intCast(i)) == self.delete_dialog_selected);
+            const is_delete = (i == 0);
+
+            // Delete button gets a red accent when selected
+            const bg = if (is_selected and is_delete)
+                Color.rgb(0x6E, 0x1E, 0x1E)
+            else if (is_selected)
+                Color.rgb(0x09, 0x47, 0x71)
+            else
+                Color.rgb(0x3C, 0x3C, 0x3C);
+
+            const border_color = if (is_selected and is_delete)
+                Color.rgb(0xCC, 0x44, 0x44)
+            else if (is_selected)
+                Color.rgb(0x26, 0x7F, 0xD9)
+            else
+                Color.rgb(0x50, 0x50, 0x50);
+
+            renderRegionBackground(Rect{ .x = bx, .y = btn_y, .w = btn_widths[i], .h = btn_h }, bg);
+            // Button border
+            renderRegionBackground(Rect{ .x = bx, .y = btn_y, .w = btn_widths[i], .h = 1 }, border_color);
+            renderRegionBackground(Rect{ .x = bx, .y = btn_y + btn_h - 1, .w = btn_widths[i], .h = 1 }, border_color);
+            renderRegionBackground(Rect{ .x = bx, .y = btn_y, .w = 1, .h = btn_h }, border_color);
+            renderRegionBackground(Rect{ .x = bx + btn_widths[i] - 1, .y = btn_y, .w = 1, .h = btn_h }, border_color);
+
+            // Button text centered
+            const text_x = bx + @divTrunc(btn_widths[i] - @as(i32, @intCast(label.len)) * cell_w, 2);
+            const text_y = btn_y + @divTrunc(btn_h - cell_h, 2);
+            const text_color = if (is_selected) Color.rgb(0xFF, 0xFF, 0xFF) else Color.rgb(0xCC, 0xCC, 0xCC);
+            font_atlas.renderText(label, @floatFromInt(text_x), @floatFromInt(text_y), text_color);
+
+            bx += btn_widths[i] + btn_pad;
+        }
+    }
+
+    /// Handle a click inside the delete dialog.
+    fn handleDeleteDialogClick(self: *Workbench, mx: i32, my: i32, layout: *const LayoutState) void {
+        const win_w = layout.window_w;
+        const win_h = layout.window_h;
+        const dlg_w: i32 = 420;
+        const dlg_h: i32 = 160;
+        const dlg_x = @divTrunc(win_w - dlg_w, 2);
+        const dlg_y = @divTrunc(win_h - dlg_h, 2) - 20;
+
+        // Click outside dialog = cancel
+        if (mx < dlg_x or mx >= dlg_x + dlg_w or my < dlg_y or my >= dlg_y + dlg_h) {
+            self.handleDeleteResult(1); // Cancel
+            return;
+        }
+
+        // Button row: fixed widths
+        const btn_h: i32 = 28;
+        const btn_pad: i32 = 10;
+        const btn_y = dlg_y + dlg_h - btn_h - 18;
+        const btn_ws = [_]i32{ 76, 76 }; // approximate widths
+        const total_btn_w = btn_ws[0] + btn_ws[1] + btn_pad;
+        var bx = dlg_x + dlg_w - total_btn_w - 18;
+
+        if (my >= btn_y and my < btn_y + btn_h) {
+            for (0..2) |i| {
+                if (mx >= bx and mx < bx + btn_ws[i]) {
+                    self.handleDeleteResult(@intCast(i));
+                    return;
+                }
+                bx += btn_ws[i] + btn_pad;
+            }
+        }
     }
 
     /// Handle a click inside the dropdown menu. Returns true if click was consumed.
@@ -4832,6 +5921,54 @@ const renderArrowUp = ft.renderArrowUp;
 const fileExtension = ft.fileExtension;
 const fileNameColor = ft.fileNameColor;
 const formatCount = ft.formatCount;
+
+// =============================================================================
+// Comptime extension helpers
+// =============================================================================
+
+/// Collect all ThemeContribution entries from all extensions at comptime.
+fn collectAllThemes() [countAllThemes()]ext_api.ThemeContribution {
+    var result: [countAllThemes()]ext_api.ThemeContribution = undefined;
+    var idx: usize = 0;
+    for (manifest.extensions) |extension| {
+        for (extension.themes) |theme| {
+            result[idx] = theme;
+            idx += 1;
+        }
+    }
+    return result;
+}
+
+/// Count total theme contributions across all extensions at comptime.
+fn countAllThemes() usize {
+    var count: usize = 0;
+    for (manifest.extensions) |extension| {
+        count += extension.themes.len;
+    }
+    return count;
+}
+
+/// Collect all StatusItemContribution entries from all extensions at comptime.
+fn collectAllStatusItems() [countAllStatusItems()]ext_api.StatusItemContribution {
+    var result: [countAllStatusItems()]ext_api.StatusItemContribution = undefined;
+    var idx: usize = 0;
+    for (manifest.extensions) |extension| {
+        for (extension.status_items) |item| {
+            result[idx] = item;
+            idx += 1;
+        }
+    }
+    return result;
+}
+
+/// Count total status item contributions across all extensions at comptime.
+fn countAllStatusItems() usize {
+    var count: usize = 0;
+    for (manifest.extensions) |extension| {
+        count += extension.status_items.len;
+    }
+    return count;
+}
 
 // =============================================================================
 // Tests

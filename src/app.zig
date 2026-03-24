@@ -239,6 +239,9 @@ pub const App = struct {
             self.workbench.activity_bar.icon_textures[1] = self.workbench.search_icon_texture_id;
         }
 
+        // 7e. Initialize file icon cache (system icons via SHGetFileInfoW)
+        self.workbench.file_icon_cache.init();
+
         // 8. Scale layout dimensions for DPI, then recompute
         self.layout.title_bar_height = @divTrunc(30 * dpi_scale, 96);
         self.layout.activity_bar_width = @divTrunc(48 * dpi_scale, 96);

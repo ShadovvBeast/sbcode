@@ -528,12 +528,45 @@ pub const WM_NCLBUTTONDBLCLK: UINT = 0x00A3;
 pub const OFN_OVERWRITEPROMPT: DWORD = 0x00000002;
 
 // =============================================================================
-// Shell drag-and-drop APIs
+// File management APIs — create, delete, rename
+// =============================================================================
+
+pub extern "kernel32" fn CreateDirectoryW([*:0]const u16, ?*anyopaque) callconv(cc) BOOL;
+pub extern "kernel32" fn DeleteFileW([*:0]const u16) callconv(cc) BOOL;
+pub extern "kernel32" fn RemoveDirectoryW([*:0]const u16) callconv(cc) BOOL;
+pub extern "kernel32" fn MoveFileW([*:0]const u16, [*:0]const u16) callconv(cc) BOOL;
+pub extern "kernel32" fn GetFileAttributesW([*:0]const u16) callconv(cc) DWORD;
+
+pub const INVALID_FILE_ATTRIBUTES: DWORD = 0xFFFFFFFF;
+
+// =============================================================================
+// Shell APIs — drag-and-drop, ShellExecuteW
 // =============================================================================
 
 pub extern "shell32" fn DragAcceptFiles(HWND, BOOL) callconv(cc) void;
 pub extern "shell32" fn DragQueryFileW(?HANDLE, UINT, ?[*:0]u16, UINT) callconv(cc) UINT;
 pub extern "shell32" fn DragFinish(?HANDLE) callconv(cc) void;
+pub extern "shell32" fn ShellExecuteW(?HWND, ?[*:0]const u16, [*:0]const u16, ?[*:0]const u16, ?[*:0]const u16, i32) callconv(cc) ?HINSTANCE;
+pub extern "shell32" fn SHGetFileInfoW([*:0]const u16, DWORD, *SHFILEINFOW, UINT, UINT) callconv(cc) usize;
+
+pub extern "user32" fn DestroyIcon(?HICON) callconv(cc) BOOL;
+
+pub const SW_SHOW: i32 = 5;
+
+/// SHFILEINFOW structure for SHGetFileInfoW.
+pub const SHFILEINFOW = extern struct {
+    hIcon: ?HICON,
+    iIcon: i32,
+    dwAttributes: DWORD,
+    szDisplayName: [260]u16,
+    szTypeName: [80]u16,
+};
+
+// SHGetFileInfoW flags
+pub const SHGFI_ICON: UINT = 0x000000100;
+pub const SHGFI_SMALLICON: UINT = 0x000000001;
+pub const SHGFI_LARGEICON: UINT = 0x000000000;
+pub const SHGFI_USEFILEATTRIBUTES: UINT = 0x000000010;
 
 // =============================================================================
 // File system watcher APIs

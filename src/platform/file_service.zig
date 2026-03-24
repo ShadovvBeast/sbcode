@@ -108,6 +108,44 @@ pub fn writeFile(path: [*:0]const u16, data: []const u8) bool {
     return ok != 0 and bytes_written == @as(w32.DWORD, @intCast(data.len));
 }
 
+/// Create a directory at the given UTF-16 null-terminated path.
+/// Returns true on success, false on failure.
+pub fn createDirectory(path: [*:0]const u16) bool {
+    return w32.CreateDirectoryW(path, null) != 0;
+}
+
+/// Delete a file at the given UTF-16 null-terminated path.
+/// Returns true on success, false on failure.
+pub fn deleteFile(path: [*:0]const u16) bool {
+    return w32.DeleteFileW(path) != 0;
+}
+
+/// Remove an empty directory at the given UTF-16 null-terminated path.
+/// Returns true on success, false on failure.
+pub fn removeDirectory(path: [*:0]const u16) bool {
+    return w32.RemoveDirectoryW(path) != 0;
+}
+
+/// Rename/move a file or directory from `old_path` to `new_path`.
+/// Both paths are UTF-16 null-terminated.
+/// Returns true on success, false on failure.
+pub fn renameFile(old_path: [*:0]const u16, new_path: [*:0]const u16) bool {
+    return w32.MoveFileW(old_path, new_path) != 0;
+}
+
+/// Check if a path exists and is a directory.
+/// Returns true if the path is a directory, false otherwise.
+pub fn isDirectory(path: [*:0]const u16) bool {
+    const attrs = w32.GetFileAttributesW(path);
+    if (attrs == w32.INVALID_FILE_ATTRIBUTES) return false;
+    return (attrs & w32.FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+/// Check if a path exists (file or directory).
+pub fn pathExists(path: [*:0]const u16) bool {
+    return w32.GetFileAttributesW(path) != w32.INVALID_FILE_ATTRIBUTES;
+}
+
 // =============================================================================
 // Tests — struct initialization and constants only (Win32 externs unavailable
 // in cross-compilation test environment)
@@ -133,4 +171,12 @@ test "Win32 file I/O constants match expected values" {
     try std.testing.expectEqual(@as(w32.DWORD, 3), OPEN_EXISTING);
     try std.testing.expectEqual(@as(w32.DWORD, 2), CREATE_ALWAYS);
     try std.testing.expectEqual(@as(w32.DWORD, 0x80), FILE_ATTRIBUTE_NORMAL);
+}
+
+test "INVALID_FILE_ATTRIBUTES constant" {
+    try std.testing.expectEqual(@as(w32.DWORD, 0xFFFFFFFF), w32.INVALID_FILE_ATTRIBUTES);
+}
+
+test "FILE_ATTRIBUTE_DIRECTORY constant" {
+    try std.testing.expectEqual(@as(w32.DWORD, 0x10), w32.FILE_ATTRIBUTE_DIRECTORY);
 }

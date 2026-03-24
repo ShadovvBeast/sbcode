@@ -52,12 +52,14 @@ pub fn tokenColor(kind: TokenKind) Color {
     };
 }
 
-// Cursor bar color (white)
-pub const CURSOR_COLOR = Color.rgb(0xFF, 0xFF, 0xFF);
+// Cursor accent color (soft blue-white for glow)
+pub const CURSOR_COLOR = Color.rgb(0xAE, 0xDA, 0xFF);
 // Cursor bar width in pixels
 pub const CURSOR_WIDTH: f32 = 2.0;
-// Cursor blink interval in seconds (toggled by workbench blink_timer)
+// Cursor blink half-period in seconds (one fade in or out)
 pub const CURSOR_BLINK_INTERVAL: f64 = 0.53;
+// Glow layers for bloom effect
+const CURSOR_GLOW_LAYERS: u8 = 4;
 
 // Selection highlight color (semi-transparent blue, matching VS Code)
 const SELECTION_BG = Color.rgba(0x26, 0x4F, 0x78, 0xCC);
@@ -129,7 +131,8 @@ pub fn renderEditorViewport(
     font_atlas: *const FontAtlas,
     scroll_top: u32,
     visible_lines: u32,
-    cursor_visible: bool,
+    blink_timer: f64,
+    cursor_anim_t: f32,
     window_h: i32,
 ) void {
     gl.glEnable(gl.GL_SCISSOR_TEST);
@@ -179,9 +182,18 @@ pub fn renderEditorViewport(
         if (bracket_match_enabled)
             drawBracketMatch(buffer, cursor_state, line_idx, text_x, y, line_height, font_atlas);
 
-        // Draw cursor bars
-        if (cursor_visible) {
-            drawCursors(cursor_state, line_idx, scroll_top, visible_lines, text_x, y, line_height, font_atlas);
+        // Draw animated cursor with glow
+        {
+            // Compute smooth blink alpha using sinusoidal fade
+            const blink_period = CURSOR_BLINK_INTERVAL * 2.0;
+            const phase = blink_timer / blink_period; // 0.0 to 1.0
+            // Sine wave: 1.0 at phase=0, 0.0 at phase=0.5, 1.0 at phase=1.0
+            // Use cos for smooth fade: cos(phase * 2π) mapped from [-1,1] to [min_alpha, 1.0]
+            const min_alpha: f32 = 0.15; // never fully invisible — subtle presence
+            const cos_val = @cos(@as(f32, @floatCast(phase)) * 6.2831853);
+            const blink_alpha = min_alpha + (1.0 - min_alpha) * (cos_val * 0.5 + 0.5);
+
+            drawCursorsAnimated(cursor_state, line_idx, text_x, y, line_height, font_atlas, blink_alpha, cursor_anim_t);
         }
     }
 
@@ -375,34 +387,98 @@ fn drawTokens(
     }
 }
 
-fn drawCursors(
+fn drawCursorsAnimated(
     cursor_state: *const CursorState,
     line_idx: u32,
-    scroll_top: u32,
-    visible_lines: u32,
     area_x: f32,
     y: f32,
     line_height: f32,
     font_atlas: *const FontAtlas,
+    blink_alpha: f32,
+    cursor_anim_t: f32,
 ) void {
-    _ = scroll_top;
-    _ = visible_lines;
-
     var c: u32 = 0;
     while (c < cursor_state.cursor_count) : (c += 1) {
         const sel = cursor_state.cursors[c];
         if (sel.active.line == line_idx) {
-            const cursor_x = area_x + @as(f32, @floatFromInt(sel.active.col)) * @as(f32, @floatFromInt(font_atlas.cell_w));
+            const cell_w: f32 = @floatFromInt(font_atlas.cell_w);
+            const cursor_x = area_x + @as(f32, @floatFromInt(sel.active.col)) * cell_w;
 
-            // Draw 2px cursor bar as a quad
+            // Smooth ease-out for cursor movement (cubic ease-out)
+            const t = cursor_anim_t;
+            const ease = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+            _ = ease; // movement lerp applied at workbench level
+
+            // Enable blending for alpha and additive glow
+            gl.glEnable(gl.GL_BLEND);
+            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
             gl.glDisable(gl.GL_TEXTURE_2D);
-            gl.glColor4f(CURSOR_COLOR.r, CURSOR_COLOR.g, CURSOR_COLOR.b, CURSOR_COLOR.a);
+
+            // --- Layer 1: Outer glow (soft bloom) ---
+            // Multiple expanding translucent rectangles for bloom effect
+            var layer: u8 = 0;
+            while (layer < CURSOR_GLOW_LAYERS) : (layer += 1) {
+                const li: f32 = @floatFromInt(layer);
+                const spread = (li + 1.0) * 2.0; // 2, 4, 6, 8 px spread
+                const glow_alpha = blink_alpha * (0.08 - li * 0.015); // fading outward
+                if (glow_alpha <= 0.0) break;
+
+                gl.glColor4f(
+                    CURSOR_COLOR.r,
+                    CURSOR_COLOR.g,
+                    CURSOR_COLOR.b,
+                    glow_alpha,
+                );
+                gl.glBegin(gl.GL_QUADS);
+                gl.glVertex2f(cursor_x - spread, y - spread * 0.3);
+                gl.glVertex2f(cursor_x + CURSOR_WIDTH + spread, y - spread * 0.3);
+                gl.glVertex2f(cursor_x + CURSOR_WIDTH + spread, y + line_height + spread * 0.3);
+                gl.glVertex2f(cursor_x - spread, y + line_height + spread * 0.3);
+                gl.glEnd();
+            }
+
+            // --- Layer 2: Core cursor bar with gradient ---
+            // Brighter center, slightly dimmer top/bottom for a polished look
+            const top_alpha = blink_alpha * 0.85;
+            const mid_alpha = blink_alpha;
+            const bot_alpha = blink_alpha * 0.85;
+            const mid_y = y + line_height * 0.5;
+
+            // Top half: gradient from top_alpha to mid_alpha
             gl.glBegin(gl.GL_QUADS);
+            gl.glColor4f(CURSOR_COLOR.r, CURSOR_COLOR.g, CURSOR_COLOR.b, top_alpha);
             gl.glVertex2f(cursor_x, y);
             gl.glVertex2f(cursor_x + CURSOR_WIDTH, y);
+            gl.glColor4f(CURSOR_COLOR.r, CURSOR_COLOR.g, CURSOR_COLOR.b, mid_alpha);
+            gl.glVertex2f(cursor_x + CURSOR_WIDTH, mid_y);
+            gl.glVertex2f(cursor_x, mid_y);
+            gl.glEnd();
+
+            // Bottom half: gradient from mid_alpha to bot_alpha
+            gl.glBegin(gl.GL_QUADS);
+            gl.glColor4f(CURSOR_COLOR.r, CURSOR_COLOR.g, CURSOR_COLOR.b, mid_alpha);
+            gl.glVertex2f(cursor_x, mid_y);
+            gl.glVertex2f(cursor_x + CURSOR_WIDTH, mid_y);
+            gl.glColor4f(CURSOR_COLOR.r, CURSOR_COLOR.g, CURSOR_COLOR.b, bot_alpha);
             gl.glVertex2f(cursor_x + CURSOR_WIDTH, y + line_height);
             gl.glVertex2f(cursor_x, y + line_height);
             gl.glEnd();
+
+            // --- Layer 3: Hot-white center highlight (inner glow) ---
+            // A thin bright line in the center of the cursor for that "lit" feel
+            const highlight_w = CURSOR_WIDTH * 0.5;
+            const highlight_x = cursor_x + (CURSOR_WIDTH - highlight_w) * 0.5;
+            const highlight_alpha = blink_alpha * 0.5;
+            gl.glColor4f(1.0, 1.0, 1.0, highlight_alpha);
+            gl.glBegin(gl.GL_QUADS);
+            gl.glVertex2f(highlight_x, y + line_height * 0.1);
+            gl.glVertex2f(highlight_x + highlight_w, y + line_height * 0.1);
+            gl.glVertex2f(highlight_x + highlight_w, y + line_height * 0.9);
+            gl.glVertex2f(highlight_x, y + line_height * 0.9);
+            gl.glEnd();
+
+            // Restore GL state (GL_BLEND stays enabled globally)
+            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
         }
     }
 }
@@ -557,10 +633,10 @@ test "tokenColor covers all TokenKind variants" {
     }
 }
 
-test "CURSOR_COLOR is white" {
-    try testing.expectApproxEqAbs(@as(f32, 1.0), CURSOR_COLOR.r, 0.002);
-    try testing.expectApproxEqAbs(@as(f32, 1.0), CURSOR_COLOR.g, 0.002);
-    try testing.expectApproxEqAbs(@as(f32, 1.0), CURSOR_COLOR.b, 0.002);
+test "CURSOR_COLOR is soft blue-white" {
+    try testing.expect(CURSOR_COLOR.r > 0.5);
+    try testing.expect(CURSOR_COLOR.g > 0.7);
+    try testing.expect(CURSOR_COLOR.b > 0.9);
 }
 
 test "CURSOR_WIDTH is 2 pixels" {
