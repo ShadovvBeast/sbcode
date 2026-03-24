@@ -140,29 +140,19 @@ const commands2 = [_]ext.CommandContribution{
 // =============================================================================
 
 const keybindings = [_]ext.KeybindingContribution{
-    // Ctrl+Shift+L — Focus chat input
+    // Ctrl+Shift+L — Focus chat input (global: works from any context)
     .{ .key_code = 0x4C, .ctrl = true, .shift = true, .command_id = 5000 },
-    // Ctrl+T — New session (in chat context)
-    .{ .key_code = 0x54, .ctrl = true, .command_id = 5001 },
-    // Ctrl+M — Toggle autonomy mode
-    .{ .key_code = 0x4D, .ctrl = true, .command_id = 5010 },
-    // Ctrl+I — Inline chat
-    .{ .key_code = 0x49, .ctrl = true, .command_id = 5020 },
-    // Shift+Ctrl+Enter — Accept diff
-    .{ .key_code = 0x0D, .ctrl = true, .shift = true, .command_id = 5021 },
-    // Shift+Ctrl+Backspace — Reject diff
-    .{ .key_code = 0x08, .ctrl = true, .shift = true, .command_id = 5022 },
-    // Alt+Ctrl+Y — Accept diff block
-    .{ .key_code = 0x59, .ctrl = true, .alt = true, .command_id = 5023 },
-    // Alt+Ctrl+N — Reject diff block
-    .{ .key_code = 0x4E, .ctrl = true, .alt = true, .command_id = 5024 },
-    // Ctrl+L — Focus chat (without new session)
-    .{ .key_code = 0x4C, .ctrl = true, .command_id = 5000 },
-    // Ctrl+Shift+R — Debug terminal
+    // Shift+Ctrl+Enter — Accept diff (editor context)
+    .{ .key_code = 0x0D, .ctrl = true, .shift = true, .command_id = 5021, .context = .editor },
+    // Shift+Ctrl+Backspace — Reject diff (editor context)
+    .{ .key_code = 0x08, .ctrl = true, .shift = true, .command_id = 5022, .context = .editor },
+    // Alt+Ctrl+Y — Accept diff block (editor context)
+    .{ .key_code = 0x59, .ctrl = true, .alt = true, .command_id = 5023, .context = .editor },
+    // Alt+Ctrl+N — Reject diff block (editor context)
+    .{ .key_code = 0x4E, .ctrl = true, .alt = true, .command_id = 5024, .context = .editor },
+    // Ctrl+Shift+R — Debug terminal (global)
     .{ .key_code = 0x52, .ctrl = true, .shift = true, .command_id = 5140 },
-    // Ctrl+Shift+Enter — Spec: Update document (context-dependent)
-    .{ .key_code = 0x0D, .ctrl = true, .shift = true, .alt = false, .command_id = 5067 },
-    // Ctrl+Alt+Enter — Spec: Run all tasks
+    // Ctrl+Alt+Enter — Spec: Run all tasks (global)
     .{ .key_code = 0x0D, .ctrl = true, .alt = true, .command_id = 5069 },
 };
 
@@ -195,6 +185,20 @@ const status_items = [_]ext.StatusItemContribution{
 };
 
 // =============================================================================
+// View contribution — Siro chat panel in the sidebar
+// =============================================================================
+
+const views = [_]ext.ViewContribution{
+    .{
+        .id = "siro.chat",
+        .name = "SIRO",
+        .location = .sidebar,
+        .icon_symbol = "S>",
+        .activity_bar_index = 5,
+    },
+};
+
+// =============================================================================
 // Extension descriptor
 // =============================================================================
 
@@ -207,10 +211,11 @@ pub const extension = ext.Extension{
     .name = "Siro Agent",
     .version = "0.2.54",
     .description = "AI-integrated spec-based development: chat, inline editing, diff review, specs, steering, hooks, MCP, autocomplete",
-    .capabilities = .{ .commands = true, .keybindings = true, .status_items = true },
+    .capabilities = .{ .commands = true, .keybindings = true, .status_items = true, .views = true },
     .commands = &all_commands,
     .keybindings = &keybindings,
     .status_items = &status_items,
+    .views = &views,
 };
 
 // =============================================================================
@@ -222,11 +227,13 @@ const testing = @import("std").testing;
 test "siro_agent extension metadata" {
     // 88 commands total (50 in commands + 38 in commands2)
     try testing.expect(extension.commands.len == 88);
-    try testing.expect(extension.keybindings.len == 12);
+    try testing.expect(extension.keybindings.len == 7);
     try testing.expect(extension.status_items.len == 3);
+    try testing.expect(extension.views.len == 1);
     try testing.expect(extension.capabilities.commands);
     try testing.expect(extension.capabilities.keybindings);
     try testing.expect(extension.capabilities.status_items);
+    try testing.expect(extension.capabilities.views);
 }
 
 test "siro_agent command IDs are in 5000 range" {

@@ -52,7 +52,8 @@ pub const Capabilities = packed struct(u16) {
     keybindings: bool = false,
     snippets: bool = false,
     status_items: bool = false,
-    _pad: u10 = 0,
+    views: bool = false,
+    _pad: u9 = 0,
 };
 
 // =============================================================================
@@ -153,6 +154,8 @@ pub const CommandContribution = struct {
 // Keybinding contribution
 // =============================================================================
 
+pub const KeybindingContext = @import("keybinding").Context;
+
 pub const KeybindingContribution = struct {
     key_code: u16,
     ctrl: bool = false,
@@ -160,6 +163,8 @@ pub const KeybindingContribution = struct {
     alt: bool = false,
     /// Command ID this keybinding triggers.
     command_id: u16,
+    /// Context in which this keybinding is active. Defaults to `.global`.
+    context: KeybindingContext = .global,
 };
 
 // =============================================================================
@@ -183,6 +188,29 @@ pub const SnippetContribution = struct {
 // =============================================================================
 // Status item contribution
 // =============================================================================
+
+// =============================================================================
+// View contribution — a sidebar/panel view registered by an extension
+// =============================================================================
+
+pub const ViewLocation = enum(u8) {
+    sidebar,
+    panel,
+};
+
+pub const ViewContribution = struct {
+    /// Unique view ID (e.g. "siro.chat").
+    id: []const u8,
+    /// Display name shown in the view header.
+    name: []const u8,
+    /// Where this view appears.
+    location: ViewLocation = .sidebar,
+    /// Activity bar icon symbol (text fallback when no texture).
+    icon_symbol: []const u8 = "?",
+    /// Activity bar icon index (assigned at registration, 0 = unassigned).
+    /// Extensions with sidebar views get their own activity bar slot.
+    activity_bar_index: u8 = 0,
+};
 
 pub const StatusAlignment = enum(u8) { left, right };
 
@@ -220,6 +248,7 @@ pub const Extension = struct {
     keybindings: []const KeybindingContribution = &.{},
     snippets: []const SnippetContribution = &.{},
     status_items: []const StatusItemContribution = &.{},
+    views: []const ViewContribution = &.{},
 };
 
 // =============================================================================
@@ -316,8 +345,17 @@ pub fn commandCount(comptime extensions: []const Extension) usize {
 /// Count total snippet contributions.
 pub fn snippetCount(comptime extensions: []const Extension) usize {
     var count: usize = 0;
-    for (extensions) |ext| {
-        count += ext.snippets.len;
+    for (extensions) |e| {
+        count += e.snippets.len;
+    }
+    return count;
+}
+
+/// Count total view contributions.
+pub fn viewCount(comptime extensions: []const Extension) usize {
+    var count: usize = 0;
+    for (extensions) |e| {
+        count += e.views.len;
     }
     return count;
 }

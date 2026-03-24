@@ -11,7 +11,8 @@ const commands = [_]ext.CommandContribution{
 };
 
 const keybindings = [_]ext.KeybindingContribution{
-    .{ .key_code = 0x56, .ctrl = true, .shift = true, .command_id = 3800 },
+    // Ctrl+Shift+V — Markdown preview (editor context)
+    .{ .key_code = 0x56, .ctrl = true, .shift = true, .command_id = 3800, .context = .editor },
 };
 
 const snippets = [_]ext.SnippetContribution{

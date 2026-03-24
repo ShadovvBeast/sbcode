@@ -17,6 +17,7 @@ const SyntaxHighlighter = @import("syntax").SyntaxHighlighter;
 const LanguageId = @import("syntax").LanguageId;
 const viewport = @import("viewport");
 const KeybindingService = @import("keybinding").KeybindingService;
+const KeybindingContext = @import("keybinding").Context;
 const Color = @import("color").Color;
 const Rect = @import("rect").Rect;
 const file_service = @import("file_service");
@@ -24,6 +25,8 @@ const StatusBar = @import("status_bar").StatusBar;
 const ActivityBar = @import("activity_bar").ActivityBar;
 const Sidebar = @import("sidebar").Sidebar;
 const sidebar_mod = @import("sidebar");
+const siro_panel_mod = @import("siro_panel");
+const SiroPanel = siro_panel_mod.SiroPanel;
 const Panel = @import("panel").Panel;
 const win32 = @import("win32");
 const context_menu = @import("context_menu");
@@ -188,6 +191,7 @@ pub const Workbench = struct {
     status_bar: StatusBar = .{},
     activity_bar: ActivityBar = .{},
     sidebar: Sidebar = .{},
+    siro_panel: SiroPanel = .{},
     panel: Panel = .{},
     file_icon_cache: FileIconCache = .{},
 
@@ -459,6 +463,20 @@ pub const Workbench = struct {
         }
     }
 
+    /// Map the current UI state to a keybinding context for priority resolution.
+    /// Overlay states (command palette, file picker, find) take highest priority,
+    /// then the focused view, with `.global` as the implicit fallback in lookup.
+    pub fn activeKeybindingContext(self: *const Workbench) KeybindingContext {
+        if (self.command_palette.visible) return .command_palette;
+        if (self.file_picker.visible) return .file_picker;
+        if (self.find_visible) return .find_overlay;
+        return switch (self.active_focus) {
+            .editor => .editor,
+            .sidebar => if (self.activity_bar.active_icon == 5) .siro else .sidebar,
+            .panel => .panel,
+        };
+    }
+
     /// Register default keybindings (e.g., Ctrl+O for file open).
     /// Also registers keybindings contributed by all compiled-in extensions.
     ///
@@ -471,10 +489,10 @@ pub const Workbench = struct {
         _ = self.keybindings.register(VK_B, true, false, false, CMD_TOGGLE_SIDEBAR);
         _ = self.keybindings.register(VK_J, true, false, false, CMD_TOGGLE_PANEL);
 
-        // Register keybindings from all extensions
+        // Register keybindings from all extensions (with context)
         inline for (manifest.extensions) |extension| {
             for (extension.keybindings) |kb| {
-                _ = self.keybindings.register(kb.key_code, kb.ctrl, kb.shift, kb.alt, kb.command_id);
+                _ = self.keybindings.registerCtx(kb.key_code, kb.ctrl, kb.shift, kb.alt, kb.command_id, kb.context);
             }
         }
     }
@@ -640,8 +658,12 @@ pub const Workbench = struct {
                 self.active_focus = .sidebar;
             },
             else => {
+                // Siro commands (5000-5199)
+                if (command_index >= 5000 and command_index < 5200) {
+                    self.dispatchSiroCommand(command_index);
+                }
                 // IDs >= 100 are dispatched through the unified menu command system
-                if (command_index >= 100) {
+                else if (command_index >= 100) {
                     self.dispatchMenuBarCmd(command_index);
                 }
             },
@@ -913,7 +935,30 @@ pub const Workbench = struct {
                 const sidebar_region = layout.getRegion(.sidebar);
                 if (self.sidebar_visible and sidebar_region.contains(input.mouse_x, input.mouse_y)) {
                     const scroll_lines: i16 = @intCast(@max(-10, @min(10, -@divTrunc(input.scroll_delta, 40))));
-                    self.sidebar.handleScroll(scroll_lines);
+                    // Dispatch scroll to the active sidebar view
+                    switch (self.activity_bar.active_icon) {
+                        0 => self.sidebar.handleScroll(scroll_lines),
+                        1 => {
+                            // Search view scroll
+                            if (scroll_lines < 0) {
+                                const add: u16 = @intCast(-scroll_lines);
+                                self.sidebar.search_scroll_top +|= add;
+                                if (self.sidebar.search_scroll_top >= self.sidebar.search_match_count) {
+                                    self.sidebar.search_scroll_top = if (self.sidebar.search_match_count > 0) self.sidebar.search_match_count - 1 else 0;
+                                }
+                            } else {
+                                const sub: u16 = @intCast(scroll_lines);
+                                if (self.sidebar.search_scroll_top >= sub) {
+                                    self.sidebar.search_scroll_top -= sub;
+                                } else {
+                                    self.sidebar.search_scroll_top = 0;
+                                }
+                            }
+                        },
+                        4 => self.sidebar.handleExtScroll(scroll_lines),
+                        5 => self.siro_panel.handleScroll(scroll_lines),
+                        else => {}, // git, debug — no scroll yet
+                    }
                 } else {
                     const lines: i32 = @divTrunc(input.scroll_delta, 40);
                     if (lines < 0) {
@@ -998,6 +1043,12 @@ pub const Workbench = struct {
                 continue;
             }
 
+            // Siro: Ctrl+Shift+L focuses chat (takes priority over Select All Occurrences)
+            if (ev.vk == 0x4C and ev.ctrl and ev.shift and !ev.alt) {
+                self.dispatchSiroCommand(5000);
+                continue;
+            }
+
             // Escape closes dropdown menu first
             if (ev.vk == VK_ESCAPE and self.dropdown_open) {
                 self.dropdown_open = false;
@@ -1032,18 +1083,29 @@ pub const Workbench = struct {
                 continue;
             }
 
-            // When sidebar search is active and sidebar has focus, route key events there
-            if (self.active_focus == .sidebar and self.activity_bar.active_icon == 1 and self.sidebar_visible) {
-                if (self.handleSidebarSearchKey(ev.vk, ev.ctrl, ev.shift)) continue;
+            // When sidebar has focus, route key events to the active view
+            if (self.active_focus == .sidebar and self.sidebar_visible) {
+                const handled = switch (self.activity_bar.active_icon) {
+                    0 => self.handleSidebarExplorerKey(ev.vk, ev.ctrl),
+                    1 => self.handleSidebarSearchKey(ev.vk, ev.ctrl, ev.shift),
+                    4 => self.handleSidebarExtensionsKey(ev.vk),
+                    5 => self.handleSidebarSiroKey(ev.vk),
+                    else => blk: {
+                        // Git (2), Debug (3) — Escape returns to editor
+                        if (ev.vk == VK_ESCAPE) {
+                            self.activity_bar.active_icon = 0;
+                            self.active_focus = .editor;
+                            break :blk true;
+                        }
+                        break :blk false;
+                    },
+                };
+                if (handled) continue;
             }
 
-            // When sidebar explorer is active and sidebar has focus, handle navigation keys
-            if (self.active_focus == .sidebar and self.activity_bar.active_icon == 0 and self.sidebar_visible) {
-                if (self.handleSidebarExplorerKey(ev.vk, ev.ctrl)) continue;
-            }
-
-            // Try keybinding lookup (global shortcuts work regardless of focus)
-            if (self.keybindings.lookup(ev.vk, ev.ctrl, ev.shift, ev.alt)) |cmd_index| {
+            // Try keybinding lookup (context-aware: specific context beats global)
+            const kb_ctx = self.activeKeybindingContext();
+            if (self.keybindings.lookup(ev.vk, ev.ctrl, ev.shift, ev.alt, kb_ctx)) |cmd_index| {
                 self.dispatchCommand(cmd_index);
                 continue;
             }
@@ -1085,10 +1147,18 @@ pub const Workbench = struct {
 
         // Dispatch text input based on focus when no overlay is visible
         if (!self.command_palette.visible and !self.find_visible and !self.file_picker.visible) {
-            if (self.active_focus == .sidebar and self.activity_bar.active_icon == 1 and self.sidebar_visible) {
-                self.handleSidebarSearchTextInput(input);
-            } else if (self.active_focus == .sidebar and self.activity_bar.active_icon == 0 and self.sidebar_visible and self.sidebar.rename_active) {
-                self.handleSidebarRenameTextInput(input);
+            if (self.active_focus == .sidebar and self.sidebar_visible) {
+                switch (self.activity_bar.active_icon) {
+                    0 => {
+                        if (self.sidebar.rename_active) {
+                            self.handleSidebarRenameTextInput(input);
+                        }
+                    },
+                    1 => self.handleSidebarSearchTextInput(input),
+                    4 => self.handleSidebarExtTextInput(input),
+                    5 => self.handleSidebarSiroTextInput(input),
+                    else => {},
+                }
             } else if (self.active_focus == .editor) {
                 self.handleTextInput(input);
             }
@@ -1143,9 +1213,13 @@ pub const Workbench = struct {
         // 2. Activity bar (delegated to sub-component)
         self.activity_bar.render(layout.getRegion(.activity_bar), font_atlas);
 
-        // 3. Sidebar (delegated to sub-component)
+        // 3. Sidebar (delegated to sub-component; Siro panel rendered separately)
         if (self.sidebar_visible) {
-            self.sidebar.render(layout.getRegion(.sidebar), font_atlas, self.activity_bar.active_icon, &self.file_icon_cache);
+            if (self.activity_bar.active_icon == 5) {
+                self.siro_panel.render(layout.getRegion(.sidebar), font_atlas);
+            } else {
+                self.sidebar.render(layout.getRegion(.sidebar), font_atlas, self.activity_bar.active_icon, &self.file_icon_cache);
+            }
         }
 
         // 4. Editor tabs
@@ -1941,6 +2015,49 @@ pub const Workbench = struct {
         }
     }
 
+    /// Dispatch Siro extension commands (5000-5199).
+    fn dispatchSiroCommand(self: *Workbench, cmd_id: u16) void {
+        switch (cmd_id) {
+            // Focus chat input
+            5000 => {
+                self.sidebar_visible = true;
+                self.activity_bar.active_icon = 5;
+                self.active_focus = .sidebar;
+                // Load saved auth on first focus if not yet loaded
+                if (self.siro_panel.connection == .disconnected) {
+                    self.siro_panel.loadAuthFromDisk();
+                }
+            },
+            // New session
+            5001 => {
+                self.siro_panel.newSession();
+                self.sidebar_visible = true;
+                self.activity_bar.active_icon = 5;
+                self.active_focus = .sidebar;
+            },
+            // Toggle autonomy mode
+            5010 => {
+                self.siro_panel.toggleAutonomyMode();
+                self.status_bar.setNotification(self.siro_panel.autonomy_mode.label());
+            },
+            // Sign in
+            5130 => {
+                self.siro_panel.signIn();
+                self.sidebar_visible = true;
+                self.activity_bar.active_icon = 5;
+                self.active_focus = .sidebar;
+            },
+            // Sign out / delete account
+            5131 => {
+                self.siro_panel.signOut();
+            },
+            else => {
+                // Other Siro commands — show notification for now
+                self.status_bar.setNotification("Siro command");
+            },
+        }
+    }
+
     /// Handle tab bar clicks (switch tab or close tab).
     fn handleTabBarClick(self: *Workbench, mx: i32, _my: i32, region: Rect) void {
         _ = _my;
@@ -1970,7 +2087,7 @@ pub const Workbench = struct {
         const icon_btn_h: i32 = self.cell_h * 3;
         if (icon_btn_h <= 0) return;
         const rel_y = my - region.y;
-        const icon_idx: u8 = @intCast(@min(@as(u32, @intCast(@divTrunc(rel_y, icon_btn_h))), 4));
+        const icon_idx: u8 = @intCast(@min(@as(u32, @intCast(@divTrunc(rel_y, icon_btn_h))), 5));
         self.activity_bar.active_icon = icon_idx;
         self.active_focus = .sidebar;
     }
@@ -1982,29 +2099,40 @@ pub const Workbench = struct {
             self.sidebar.cancelRename();
         }
 
-        // Check toolbar buttons first (explorer view only)
-        if (self.activity_bar.active_icon == 0) {
-            if (self.sidebar.handleToolbarClick(mx, my, region, self.cell_h)) |action| {
-                switch (action) {
-                    .new_file => self.sidebarNewFile(),
-                    .new_folder => self.sidebarNewFolder(),
-                    .refresh => self.refreshSidebar(),
-                    .collapse_all => self.collapseAllFolders(),
+        // Dispatch based on active sidebar view
+        switch (self.activity_bar.active_icon) {
+            0 => {
+                // Explorer view
+                if (self.sidebar.handleToolbarClick(mx, my, region, self.cell_h)) |action| {
+                    switch (action) {
+                        .new_file => self.sidebarNewFile(),
+                        .new_folder => self.sidebarNewFolder(),
+                        .refresh => self.refreshSidebar(),
+                        .collapse_all => self.collapseAllFolders(),
+                    }
+                    return;
                 }
-                return;
-            }
-        }
-
-        const idx = self.sidebar.handleClick(my, region, self.cell_h) orelse return;
-
-        // If it's a file (not directory), open it
-        if (!self.sidebar.is_dir[idx]) {
-            if (self.sidebar.getEntryPath(idx)) |path| {
-                self.openFile(path);
-            }
-        } else {
-            // Directory was toggled — rescan if expanding at depth 0
-            // (expansion toggle already handled by sidebar.handleClick)
+                const idx = self.sidebar.handleClick(my, region, self.cell_h) orelse return;
+                if (!self.sidebar.is_dir[idx]) {
+                    if (self.sidebar.getEntryPath(idx)) |path| {
+                        self.openFile(path);
+                    }
+                }
+            },
+            1 => {
+                // Search view — clicks handled by search result selection
+                self.handleSidebarSearchClick(mx, my, region);
+            },
+            4 => {
+                // Extensions view
+                _ = self.sidebar.handleExtClick(mx, my, region, self.cell_h);
+            },
+            5 => {
+                // Siro view — clicks in chat area (no-op for now, input field handled separately)
+            },
+            else => {
+                // Git (2), Debug (3) — placeholder views, no click handling yet
+            },
         }
     }
 
@@ -3061,6 +3189,25 @@ pub const Workbench = struct {
         return false;
     }
 
+    /// Handle click in sidebar search view — select a match result.
+    fn handleSidebarSearchClick(self: *Workbench, _: i32, my: i32, region: Rect) void {
+        const ch = self.cell_h;
+        const header_h = ch + @divTrunc(ch, 2);
+        const input_h = ch + 8;
+        const pad = 8;
+        // Content starts after: header + pad + search input + pad + replace input + pad + toggles + pad
+        const content_y = region.y + header_h + pad + input_h + pad + input_h + pad + ch + pad;
+        const row_h = ch + 4;
+        if (my < content_y) return;
+        const rel_y = my - content_y;
+        const row: i16 = @intCast(@divTrunc(rel_y, row_h));
+        const actual_row = row + @as(i16, @intCast(self.sidebar.search_scroll_top));
+        if (actual_row >= 0 and actual_row < @as(i16, @intCast(self.sidebar.search_match_count))) {
+            self.sidebar.search_selected_row = actual_row;
+            self.jumpToSearchMatch();
+        }
+    }
+
     /// Handle text input when sidebar search view is active.
     fn handleSidebarSearchTextInput(self: *Workbench, input: *const InputState) void {
         if (input.text_input_len == 0) return;
@@ -3076,6 +3223,83 @@ pub const Workbench = struct {
         }
         if (self.sidebar.search_active_field == .search) {
             self.executeSearch();
+        }
+    }
+
+    /// Handle key events when sidebar extensions view is active.
+    fn handleSidebarExtensionsKey(self: *Workbench, vk: u16) bool {
+        if (vk == VK_ESCAPE) {
+            if (self.sidebar.ext_filter_len > 0) {
+                self.sidebar.clearExtFilter();
+            } else {
+                self.activity_bar.active_icon = 0;
+                self.active_focus = .editor;
+            }
+            return true;
+        }
+        if (vk == VK_BACK) {
+            self.sidebar.backspaceExtFilter();
+            return true;
+        }
+        return false;
+    }
+
+    /// Handle text input when sidebar extensions view is active.
+    fn handleSidebarExtTextInput(self: *Workbench, input: *const InputState) void {
+        if (input.text_input_len == 0) return;
+        var i: u32 = 0;
+        while (i < input.text_input_len) : (i += 1) {
+            const ch = input.text_input[i];
+            if (ch < 0x20) continue;
+            self.sidebar.appendExtFilterChar(ch);
+        }
+    }
+
+    /// Handle key events when sidebar Siro view is active.
+    fn handleSidebarSiroKey(self: *Workbench, vk: u16) bool {
+        if (vk == VK_ESCAPE) {
+            if (self.siro_panel.auth_pending) {
+                self.siro_panel.auth_pending = false;
+                self.siro_panel.clearAuthCode();
+            } else if (self.siro_panel.input_len > 0) {
+                self.siro_panel.clearInput();
+            } else {
+                self.activity_bar.active_icon = 0;
+                self.active_focus = .editor;
+            }
+            return true;
+        }
+        if (vk == VK_BACK) {
+            if (self.siro_panel.auth_pending) {
+                self.siro_panel.backspaceAuthCode();
+            } else {
+                self.siro_panel.backspaceInput();
+            }
+            return true;
+        }
+        if (vk == VK_RETURN) {
+            if (self.siro_panel.auth_pending) {
+                self.siro_panel.exchangeAuthCode();
+            } else {
+                self.siro_panel.submitPrompt();
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /// Handle text input when sidebar Siro view is active.
+    fn handleSidebarSiroTextInput(self: *Workbench, input: *const InputState) void {
+        if (input.text_input_len == 0) return;
+        var i: u32 = 0;
+        while (i < input.text_input_len) : (i += 1) {
+            const ch = input.text_input[i];
+            if (ch < 0x20) continue;
+            if (self.siro_panel.auth_pending) {
+                self.siro_panel.appendAuthCodeChar(ch);
+            } else {
+                self.siro_panel.appendInputChar(ch);
+            }
         }
     }
 
@@ -6143,7 +6367,7 @@ test "registerDefaultKeybindings registers Ctrl+O" {
     wb.registerDefaultKeybindings();
 
     // Ctrl+O should map to CMD_OPEN_FILE
-    const result = wb.keybindings.lookup(VK_O, true, false, false);
+    const result = wb.keybindings.lookup(VK_O, true, false, false, .global);
     try testing.expect(result != null);
     try testing.expectEqual(CMD_OPEN_FILE, result.?);
 }
@@ -6222,7 +6446,7 @@ test "registerDefaultKeybindings includes Ctrl+S" {
     wb.registerDefaultKeybindings();
 
     // Ctrl+S should map to CMD_SAVE_FILE
-    const result = wb.keybindings.lookup(VK_S, true, false, false);
+    const result = wb.keybindings.lookup(VK_S, true, false, false, .global);
     try testing.expect(result != null);
     try testing.expectEqual(CMD_SAVE_FILE, result.?);
 }

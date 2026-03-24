@@ -386,6 +386,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "syntax", .module = syntax_mod },
             .{ .name = "color", .module = color_mod },
+            .{ .name = "keybinding", .module = keybinding_mod },
         },
     });
     const ext_zig_lang_mod = b.createModule(.{
@@ -1301,6 +1302,22 @@ pub fn build(b: *std.Build) void {
             .{ .name = "extension", .module = extension_mod },
         },
     });
+    const siro_panel_mod = b.createModule(.{
+        .root_source_file = b.path("src/workbench/siro_panel.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "gl", .module = gl_mod },
+            .{ .name = "font_atlas", .module = font_atlas_mod },
+            .{ .name = "color", .module = color_mod },
+            .{ .name = "rect", .module = rect_mod },
+            .{ .name = "file_tree", .module = file_tree_mod },
+            .{ .name = "json", .module = json_mod },
+            .{ .name = "http", .module = http_mod },
+            .{ .name = "file_service", .module = file_service_mod },
+            .{ .name = "win32", .module = win32_mod },
+        },
+    });
     const workbench_mod = b.createModule(.{
         .root_source_file = b.path("src/workbench/workbench.zig"),
         .target = target,
@@ -1323,6 +1340,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "status_bar", .module = status_bar_mod },
             .{ .name = "activity_bar", .module = activity_bar_mod },
             .{ .name = "sidebar", .module = sidebar_mod },
+            .{ .name = "siro_panel", .module = siro_panel_mod },
             .{ .name = "panel", .module = panel_mod },
             .{ .name = "context_menu", .module = context_menu_mod },
             .{ .name = "win32", .module = win32_mod },
@@ -1382,6 +1400,8 @@ pub fn build(b: *std.Build) void {
     // Run step
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
+    // Set CWD to project root so icon paths (src/*.ico) resolve correctly
+    run_cmd.setCwd(b.path("."));
     const run_step = b.step("run", "Run SBCode");
     run_step.dependOn(&run_cmd.step);
 
@@ -1435,6 +1455,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "tabs", .module = tabs_mod },
                 .{ .name = "activity_bar", .module = activity_bar_mod },
                 .{ .name = "sidebar", .module = sidebar_mod },
+                .{ .name = "siro_panel", .module = siro_panel_mod },
                 .{ .name = "file_tree", .module = file_tree_mod },
                 .{ .name = "panel", .module = panel_mod },
                 .{ .name = "context_menu", .module = context_menu_mod },
